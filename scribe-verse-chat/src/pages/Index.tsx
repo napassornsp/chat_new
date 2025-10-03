@@ -1,3 +1,4 @@
+// src/pages/Index.tsx
 import { useEffect, useRef, useState } from "react";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
@@ -12,7 +13,7 @@ import type { BotVersion, Chat, Credits, Message } from "@/services/types";
 
 const asId = (v: string | number | null | undefined) => String(v ?? "");
 
-const Index = () => {
+export default function Index() {
   const { user, loading } = useAuthSession();
   const { toast } = useToast();
 
@@ -24,9 +25,18 @@ const Index = () => {
   const [sending, setSending] = useState(false);
   const [showTyping, setShowTyping] = useState(false);
 
-  const messagesEndRef = useRef<HTMLDivElement | null>(null);
-  const scrollToBottom = () =>
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  /** The ONLY scroll container — we scroll this, not the window */
+  const scrollerRef = useRef<HTMLDivElement | null>(null);
+  const scrollToBottom = () => {
+    const el = scrollerRef.current;
+    if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+  };
+
+  /** Race guards so old loads can't overwrite the new chat */
+  const loadSeq = useRef(0);
+  const abortRef = useRef<AbortController | null>(null);
+  const activeIdRef = useRef<string | null>(null);
+  useEffect(() => { activeIdRef.current = activeId; }, [activeId]);
 
   useEffect(() => {
     document.title = "AI Chat – Multi-Version Assistant";
@@ -37,23 +47,24 @@ const Index = () => {
     if (!loading && !user) window.location.href = "/auth";
   }, [loading, user]);
 
-  // Initial load
+  // Initial credits + chats
   useEffect(() => {
     if (!user) return;
     (async () => {
       try {
-        const [c, chatsRes] = await Promise.all([
+        const [c, list] = await Promise.all([
           service.getCredits(),
           service.listChats(1000, 0),
         ]);
         setCredits(c);
-        setChats(chatsRes);
-        if (chatsRes.length === 0) {
+        setChats(list);
+        if (list.length === 0) {
           const created = await service.createChat("New Chat");
           setChats([created]);
           setActiveId(asId(created.id));
+          setMessages([]); // clean
         } else {
-          setActiveId(asId(chatsRes[0].id));
+          setActiveId(asId(list[0].id));
         }
       } catch (e: any) {
         toast({ title: "Load error", description: e?.message ?? String(e) });
@@ -61,29 +72,62 @@ const Index = () => {
     })();
   }, [user]);
 
-  // Load messages for active chat
+  /** Central helper: switch to a chat and show a blank pane instantly */
+  const switchChat = (id: string) => {
+    // cancel any in-flight message load and invalidate pending results
+    abortRef.current?.abort();
+    ++loadSeq.current;
+
+    setActiveId(asId(id));
+    setMessages([]);      // immediate blank state
+    setShowTyping(false);
+  };
+
+  // Load messages for the active chat — cancel previous, ignore stale, and filter by chat_id
   useEffect(() => {
     if (!activeId) return;
+
+    abortRef.current?.abort();
+    abortRef.current = new AbortController();
+
+    const seq = ++loadSeq.current;
+    setMessages([]); // ensure UI looks clean while loading
+
     (async () => {
       try {
-        const msgs = await service.listMessages(activeId, 200, 0);
-        const normalized = msgs
+        const rows: Message[] = await (service as any).listMessages(
+          activeId,
+          200,
+          0,
+          { signal: abortRef.current?.signal } // ok if service ignores
+        );
+
+        if (seq !== loadSeq.current) return; // stale response → ignore
+
+        const normalized = (rows ?? [])
           .filter(Boolean)
+          .filter((m: any) => asId(m.chat_id) === asId(activeId)) // belt & suspenders
           .map((m: any) => ({ ...m, role: m.role ?? m.content?.role ?? "assistant" }));
+
         setMessages(normalized);
         setTimeout(scrollToBottom, 0);
       } catch (e: any) {
+        if (e?.name === "AbortError" || e?.name === "CanceledError") return;
+        if (seq !== loadSeq.current) return;
         toast({ title: "Messages error", description: e?.message ?? String(e) });
       }
     })();
+
+    return () => abortRef.current?.abort();
   }, [activeId]);
 
   const onNewChat = async () => {
     try {
+      // clear NOW and cancel any loaders so nothing can pop back
+      switchChat(asId("pending-new"));
       const chat = await service.createChat("New Chat");
       setChats((prev) => [chat, ...prev]);
-      setActiveId(asId(chat.id));
-      setMessages([]);
+      switchChat(asId(chat.id)); // select the real new chat id (keeps pane clean)
     } catch (e: any) {
       toast({ title: "Could not create chat", description: e?.message ?? String(e) });
     }
@@ -102,9 +146,9 @@ const Index = () => {
     try {
       await service.deleteChat(id);
       setChats((cs) => cs.filter((c) => asId(c.id) !== asId(id)));
-      if (asId(activeId) === asId(id)) {
+      if (asId(activeIdRef.current) === asId(id)) {
         const next = chats.find((c) => asId(c.id) !== asId(id));
-        if (next) setActiveId(asId(next.id));
+        if (next) switchChat(asId(next.id));
         else await onNewChat();
       }
     } catch (e: any) {
@@ -113,10 +157,11 @@ const Index = () => {
   };
 
   const pushNotice = (text: string) => {
-    if (!activeId || !user) return;
+    const id = activeIdRef.current;
+    if (!id || !user) return;
     const notice: Message = {
       id: `notice-${Date.now()}`,
-      chat_id: activeId,
+      chat_id: id,
       user_id: user.id,
       role: "assistant",
       content: { text, version, meta: { notice: true } } as any,
@@ -127,7 +172,8 @@ const Index = () => {
   };
 
   const send = async (text: string) => {
-    if (!activeId || sending) return;
+    const id = activeIdRef.current;
+    if (!id || sending) return;
 
     if ((credits?.remaining ?? 0) <= 0) {
       pushNotice("Credits not enough.");
@@ -135,38 +181,42 @@ const Index = () => {
     }
 
     setSending(true);
-    const userMsg: Message = {
+    const tmp: Message = {
       id: `tmp-${Date.now()}`,
-      chat_id: activeId,
+      chat_id: id,
       user_id: user!.id,
       role: "user",
       content: { text, version, meta: {} } as any,
       created_at: new Date().toISOString(),
     } as any;
 
-    setMessages((m) => [...m, userMsg]);
+    setMessages((m) => [...m, tmp]);
     setShowTyping(true);
 
     try {
-      const res: any = await service.sendMessage({ chatId: activeId, version, text });
+      const res: any = await service.sendMessage({ chatId: id, version, text });
 
       if (res?.errorCode === "INSUFFICIENT_CREDITS") {
-        setMessages((m) => m.filter((mm) => mm && (mm as any).id !== userMsg.id));
         setShowTyping(false);
+        setMessages((m) => m.filter((x) => (x as any).id !== tmp.id));
         pushNotice("Credits not enough.");
         return;
       }
 
-      const { assistant, credits: newCredits } = res;
-      // ✅ keep credits in sync without NaN
+      const { assistant, credits: newCredits } = res || {};
       if (newCredits) setCredits(newCredits);
 
+      // If user switched chats while sending, don't append here
+      if (activeIdRef.current !== id) return;
+
+      if (assistant?.chat_id && asId(assistant.chat_id) === asId(id)) {
+        setMessages((m) => [...m, { ...assistant, role: "assistant" } as any]);
+      }
       setShowTyping(false);
-      setMessages((m) => [...m, { ...assistant, role: "assistant" } as any]);
       setTimeout(scrollToBottom, 50);
     } catch (e: any) {
       setShowTyping(false);
-      setMessages((m) => m.filter((mm) => mm && (mm as any).id !== userMsg.id));
+      setMessages((m) => m.filter((x) => (x as any).id !== tmp.id));
       toast({ title: "Send failed", description: e?.message ?? String(e) });
     } finally {
       setSending(false);
@@ -174,7 +224,8 @@ const Index = () => {
   };
 
   const regenerate = async (lastUserText: string) => {
-    if (!activeId || sending) return;
+    const id = activeIdRef.current;
+    if (!id || sending) return;
 
     if ((credits?.remaining ?? 0) <= 0) {
       pushNotice("Credits not enough.");
@@ -184,7 +235,7 @@ const Index = () => {
     setSending(true);
     setShowTyping(true);
     try {
-      const res: any = await service.regenerate({ chatId: activeId, version, lastUserText });
+      const res: any = await service.regenerate({ chatId: id, version, lastUserText });
 
       if (res?.errorCode === "INSUFFICIENT_CREDITS") {
         setShowTyping(false);
@@ -192,11 +243,15 @@ const Index = () => {
         return;
       }
 
-      const { assistant, credits: newCredits } = res;
+      const { assistant, credits: newCredits } = res || {};
       if (newCredits) setCredits(newCredits);
 
+      if (activeIdRef.current !== id) return;
+
+      if (assistant?.chat_id && asId(assistant.chat_id) === asId(id)) {
+        setMessages((m) => [...m, { ...assistant, role: "assistant" } as any]);
+      }
       setShowTyping(false);
-      setMessages((m) => [...m, { ...assistant, role: "assistant" } as any]);
       setTimeout(scrollToBottom, 50);
     } catch (e: any) {
       setShowTyping(false);
@@ -206,31 +261,23 @@ const Index = () => {
     }
   };
 
-  const onCopy = async (text: string) => {
-    try {
-      await navigator.clipboard.writeText(text);
-      toast({ title: "Copied" });
-    } catch {
-      toast({ title: "Copy failed" });
-    }
-  };
-
   return (
     <SidebarProvider>
-      {/* FIX: pin the whole shell to the viewport so the window never scrolls */}
+      {/* Page pinned to viewport; window cannot scroll (see index.css) */}
       <div className="fixed inset-0 flex overflow-hidden">
         <AppSidebar
           chats={chats}
           activeId={activeId}
-          onSelect={(id) => setActiveId(asId(id))}
+          onSelect={(id) => switchChat(asId(id))}
           onNewChat={onNewChat}
           onRename={onRename}
           onDelete={onDelete}
           loggedIn={!!user}
         />
 
-        {/* Right side: column layout. Only the middle region scrolls. */}
+        {/* Right pane: header | scrollable messages | footer */}
         <div className="flex-1 min-w-0 min-h-0 flex flex-col overflow-hidden">
+          {/* Header (doesn't scroll) */}
           <div className="shrink-0">
             <ChatHeader
               version={version}
@@ -239,8 +286,11 @@ const Index = () => {
             />
           </div>
 
+          {/* ONLY this section scrolls */}
           <section
-            className="flex-1 min-h-0 overflow-y-auto p-4 space-y-4 break-words"
+            key={activeId ?? "none"}  // force remount on chat switch
+            ref={scrollerRef}
+            className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-4 space-y-4 break-words"
             aria-live="polite"
           >
             {messages.length === 0 && (
@@ -249,19 +299,22 @@ const Index = () => {
               </div>
             )}
 
-            {messages.filter(Boolean).map((m: any) => (
+            {messages.map((m: any) => (
               <ChatMessageItem
                 key={String(m.id)}
                 message={{ ...m, role: m.role ?? m.content?.role ?? "assistant" } as any}
-                onCopy={onCopy}
+                onCopy={async (text) => {
+                  try { await navigator.clipboard.writeText(text); toast({ title: "Copied" }); }
+                  catch { toast({ title: "Copy failed" }); }
+                }}
                 onRegenerate={(t) => regenerate(t)}
               />
             ))}
 
             {showTyping && <TypingBubble />}
-            <div ref={messagesEndRef} />
           </section>
 
+          {/* Composer (doesn't scroll) */}
           <div className="shrink-0 bg-background border-t">
             <ChatInput disabled={sending} onSend={send} />
           </div>
@@ -269,6 +322,4 @@ const Index = () => {
       </div>
     </SidebarProvider>
   );
-};
-
-export default Index;
+}

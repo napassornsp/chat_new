@@ -109,3 +109,8 @@ All colors MUST be HSL.
     @apply bg-background text-foreground;
   }
 }
+
+/* Lock the viewport; only the messages section may scroll */
+html, body, #root { height: 100%; width: 100%; }
+html, body { margin: 0; overflow: hidden; overscroll-behavior: none; }
+#root { position: fixed; inset: 0; display: flex; min-width: 0; min-height: 0; }
