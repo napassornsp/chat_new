@@ -209,9 +209,9 @@ def seed():
 
     # Default users to play with
     _ensure_user("admin@example.com", "Admin", password="admin123", credits=1000)
-    _ensure_user("v1@example.com", "V1 User", credits=100)
-    _ensure_user("v2@example.com", "V2 User", credits=100)
-    _ensure_user("v3@example.com", "V3 User", credits=100)
+    _ensure_user("v1@example.com", "V1 User", password="admin123", credits=100)
+    _ensure_user("v2@example.com", "V2 User", password="admin123", credits=100)
+    _ensure_user("v3@example.com", "V3 User", password="admin123", credits=100)
 
 
 # ------------------ Health ------------------

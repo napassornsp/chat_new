@@ -170,20 +170,36 @@ export function AppSidebar({
             {/* Logo area */}
             {!collapsed ? (
               <div className="flex items-center gap-2">
-                <div className="h-8 w-8 rounded-md bg-primary/10 flex items-center justify-center">
-                  <MessageSquare className="h-4 w-4 text-primary" />
+                <div className="h-8 w-8 rounded-md bg-primary/10 flex items-center justify-center overflow-hidden">
+                  {/* Expanded: squared chip with your image */}
+                  <img
+                    src="/jv_logo.jpg"
+                    alt="JV System logo"
+                    className="h-6 w-6 object-contain"
+                  />
                 </div>
-                <span className="font-semibold text-sm">Company</span>
+                <span className="font-semibold text-sm">JV System</span>
               </div>
             ) : (
               <div className="h-8 w-8 rounded-full bg-primary flex items-center justify-center overflow-hidden">
-                <MessageSquare className="h-4 w-4 text-primary-foreground" />
+                {/* Collapsed: circular chip with your image (white-on-primary look) */}
+                <img
+                  src="/jv_logo.jpg"
+                  alt="JV System logo"
+                  className="h-6 w-6 object-contain"
+                />
               </div>
             )}
+
             {collapsed ? (
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <Button variant="ghost" size="icon" aria-label="Expand sidebar" onClick={toggleSidebar}>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    aria-label="Expand sidebar"
+                    onClick={toggleSidebar}
+                  >
                     <PanelLeftOpen className="h-4 w-4" />
                   </Button>
                 </TooltipTrigger>
@@ -192,7 +208,12 @@ export function AppSidebar({
             ) : (
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <Button variant="ghost" size="icon" aria-label="Collapse sidebar" onClick={toggleSidebar}>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    aria-label="Collapse sidebar"
+                    onClick={toggleSidebar}
+                  >
                     <PanelLeft className="h-4 w-4" />
                   </Button>
                 </TooltipTrigger>
@@ -243,24 +264,6 @@ export function AppSidebar({
                 >
                   <Eye />
                   {!collapsed && <span>Vision AI</span>}
-                </SidebarMenuButton>
-              </SidebarMenuItem>
-
-              <SidebarMenuItem key="menu-notifications">
-                <SidebarMenuButton
-                  tooltip={{ children: "Notifications", hidden: false }}
-                  className="overflow-hidden"
-                  onClick={() => {
-                    if (location.pathname !== "/notifications") window.location.href = "/notifications";
-                  }}
-                >
-                  <div className="relative">
-                    <Bell />
-                    <span className="absolute -top-1 -right-1 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-primary text-primary-foreground text-[10px] px-[2px] leading-none">
-                      3
-                    </span>
-                  </div>
-                  {!collapsed && <span>Notifications</span>}
                 </SidebarMenuButton>
               </SidebarMenuItem>
             </SidebarMenu>
@@ -494,12 +497,14 @@ export function AppSidebar({
                     <PopoverTrigger asChild>
                       <SidebarMenuButton
                         tooltip={{ children: "Profile", hidden: false }}
-                        className={`overflow-hidden ${collapsed ? "w-full justify-center mx-auto" : ""}`}
+                        className={`overflow-hidden ${collapsed ? "w-full justify-center mx-auto" : "justify-start"}`}
                       >
-                        <div className="relative">
+                        <div className="[&_svg]:h-4 [&_svg]:w-4 relative">
                           <User />
-                          {/* Notification dot */}
-                          <span className="absolute -top-0.5 -right-0.5 h-2 w-2 rounded-full bg-destructive" aria-hidden></span>
+                          <span
+                            className="absolute -top-0.5 -right-0.5 h-2 w-2 rounded-full bg-destructive"
+                            aria-hidden
+                          />
                         </div>
                         {!collapsed && <span>Profile</span>}
                       </SidebarMenuButton>
