@@ -1,3 +1,4 @@
+// src/components/AppSidebar.tsx
 import { useMemo, useEffect, useState } from "react";
 import {
   Sidebar,
@@ -37,7 +38,6 @@ import { Badge } from "@/components/ui/badge";
 import service from "@/services/backend";
 import type { Chat } from "@/services/types";
 import useAuthSession from "@/hooks/useAuthSession";
-import { supabase } from "@/integrations/supabase/client";
 import { useLocation } from "react-router-dom";
 
 interface AppSidebarProps {
@@ -59,6 +59,23 @@ type OcrItem = {
   file_url?: string | null;
 };
 
+/* -------- offline API helpers (Flask) -------- */
+const API = import.meta.env.VITE_OFFLINE_API || "http://localhost:5001";
+function authHeaders() {
+  const token = localStorage.getItem("offline_token");
+  return token
+    ? { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }
+    : { "Content-Type": "application/json" };
+}
+async function selectTable<T = any>(table: string, params: Record<string, string> = {}) {
+  const u = new URL(`${API}/db/${table}`);
+  Object.entries(params).forEach(([k, v]) => u.searchParams.set(k, v));
+  const r = await fetch(u.toString(), { headers: authHeaders() });
+  if (!r.ok) throw new Error(`Failed to load ${table}`);
+  const j = await r.json();
+  return (j?.rows ?? []) as T[];
+}
+
 export function AppSidebar({
   chats,
   activeId,
@@ -76,20 +93,20 @@ export function AppSidebar({
 
   const [ocrItems, setOcrItems] = useState<OcrItem[]>([]);
 
-  // ---- OCR history loader (guarded + safe) ----
+  /* -------- OCR history from Flask (offline) -------- */
   const loadOcr = async () => {
     try {
-      const [{ data: bills }, { data: banks }] = await Promise.all([
-        supabase
-          .from("ocr_bill_extractions")
-          .select("id, filename, created_at, approved, file_url")
-          .order("created_at", { ascending: false })
-          .limit(50),
-        supabase
-          .from("ocr_bank_extractions")
-          .select("id, filename, created_at, approved, file_url")
-          .order("created_at", { ascending: false })
-          .limit(50),
+      const [bills, banks] = await Promise.all([
+        selectTable<any>("ocr_bill_extractions", {
+          _order_col: "created_at",
+          _order_asc: "0",
+          _limit: "50",
+        }),
+        selectTable<any>("ocr_bank_extractions", {
+          _order_col: "created_at",
+          _order_asc: "0",
+          _limit: "50",
+        }),
       ]);
 
       const billItems: OcrItem[] = (bills ?? []).map((b: any) => ({
@@ -100,7 +117,6 @@ export function AppSidebar({
         approved: !!b.approved,
         file_url: b.file_url ?? null,
       }));
-
       const bankItems: OcrItem[] = (banks ?? []).map((b: any) => ({
         id: String(b.id),
         type: "bank",
@@ -116,7 +132,6 @@ export function AppSidebar({
 
       setOcrItems(combined);
     } catch {
-      // swallow errors so the sidebar doesn't crash if OCR endpoints fail
       setOcrItems([]);
     }
   };
@@ -125,28 +140,23 @@ export function AppSidebar({
     if (!isOcr) return;
     loadOcr();
     const listener = () => loadOcr();
-    // @ts-ignore custom event
+    // @ts-ignore custom event wiring
     window.addEventListener("ocr:refresh", listener as any);
-    return () => {
-      // @ts-ignore custom event
-      window.removeEventListener("ocr:refresh", listener as any);
-    };
+    return () => window.removeEventListener("ocr:refresh", listener as any);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOcr]);
 
-  // ---- Group chats for sections ----
+  /* -------- group chats for sections -------- */
   const groups = useMemo(() => {
     const now = new Date();
     const getAgeDays = (iso: string) => {
       const d = new Date(iso);
       return (now.getTime() - d.getTime()) / (1000 * 60 * 60 * 24);
     };
-
     const recent: Chat[] = [];
     const last7: Chat[] = [];
     const last30: Chat[] = [];
     const older: Chat[] = [];
-
     for (const c of chats) {
       const days = getAgeDays(c.created_at);
       if (days <= 1) recent.push(c);
@@ -154,52 +164,35 @@ export function AppSidebar({
       else if (days <= 30) last30.push(c);
       else older.push(c);
     }
-
     return { recent, last7, last30, older };
   }, [chats]);
 
-  // Helper to ensure stable key and safe id usage
   const chatKey = (c: Chat, index: number) => String(c.id ?? `${c.title ?? "untitled"}-${index}`);
   const chatIdStr = (id: string | number | null | undefined) => String(id ?? "");
 
   return (
     <Sidebar collapsible="icon" className="h-screen overflow-hidden z-[3]">
       <SidebarContent className="overflow-hidden">
+        {/* ---------- Header / Logo ---------- */}
         <SidebarHeader>
           <div className="flex items-center justify-between px-2 py-2">
-            {/* Logo area */}
             {!collapsed ? (
               <div className="flex items-center gap-2">
                 <div className="h-8 w-8 rounded-md bg-primary/10 flex items-center justify-center overflow-hidden">
-                  {/* Expanded: squared chip with your image */}
-                  <img
-                    src="/jv_logo.jpg"
-                    alt="JV System logo"
-                    className="h-6 w-6 object-contain"
-                  />
+                  <img src="/jv_logo.jpg" alt="JV System" className="h-6 w-6 object-contain" />
                 </div>
                 <span className="font-semibold text-sm">JV System</span>
               </div>
             ) : (
               <div className="h-8 w-8 rounded-full bg-primary flex items-center justify-center overflow-hidden">
-                {/* Collapsed: circular chip with your image (white-on-primary look) */}
-                <img
-                  src="/jv_logo.jpg"
-                  alt="JV System logo"
-                  className="h-6 w-6 object-contain"
-                />
+                <img src="/jv_logo.jpg" alt="JV System" className="h-6 w-6 object-contain" />
               </div>
             )}
 
             {collapsed ? (
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    aria-label="Expand sidebar"
-                    onClick={toggleSidebar}
-                  >
+                  <Button variant="ghost" size="icon" aria-label="Expand sidebar" onClick={toggleSidebar}>
                     <PanelLeftOpen className="h-4 w-4" />
                   </Button>
                 </TooltipTrigger>
@@ -208,12 +201,7 @@ export function AppSidebar({
             ) : (
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    aria-label="Collapse sidebar"
-                    onClick={toggleSidebar}
-                  >
+                  <Button variant="ghost" size="icon" aria-label="Collapse sidebar" onClick={toggleSidebar}>
                     <PanelLeft className="h-4 w-4" />
                   </Button>
                 </TooltipTrigger>
@@ -223,6 +211,7 @@ export function AppSidebar({
           </div>
         </SidebarHeader>
 
+        {/* ---------- Modules ---------- */}
         <SidebarGroup>
           {!collapsed && <SidebarGroupLabel>Modules</SidebarGroupLabel>}
           <SidebarGroupContent>
@@ -230,13 +219,10 @@ export function AppSidebar({
               <SidebarMenuItem key="menu-chatbot">
                 <SidebarMenuButton
                   tooltip={{ children: "Chatbot", hidden: false }}
-                  size="default"
                   className="overflow-hidden"
-                  onClick={() => {
-                    if (location.pathname !== "/") window.location.href = "/";
-                  }}
+                  onClick={() => { if (location.pathname !== "/") window.location.href = "/"; }}
                 >
-                  <MessageSquare />
+                  <MessageSquare className="h-4 w-4" />
                   {!collapsed && <span>Chatbot</span>}
                 </SidebarMenuButton>
               </SidebarMenuItem>
@@ -245,11 +231,9 @@ export function AppSidebar({
                 <SidebarMenuButton
                   tooltip={{ children: "OCR", hidden: false }}
                   className="overflow-hidden"
-                  onClick={() => {
-                    if (!location.pathname.startsWith("/ocr")) window.location.href = "/ocr/bill";
-                  }}
+                  onClick={() => { if (!location.pathname.startsWith("/ocr")) window.location.href = "/ocr/bill"; }}
                 >
-                  <FileText />
+                  <FileText className="h-4 w-4" />
                   {!collapsed && <span>OCR</span>}
                 </SidebarMenuButton>
               </SidebarMenuItem>
@@ -258,11 +242,9 @@ export function AppSidebar({
                 <SidebarMenuButton
                   tooltip={{ children: "Vision AI", hidden: false }}
                   className="overflow-hidden"
-                  onClick={() => {
-                    if (!location.pathname.startsWith("/vision")) window.location.href = "/vision/flower";
-                  }}
+                  onClick={() => { if (!location.pathname.startsWith("/vision")) window.location.href = "/vision/flower"; }}
                 >
-                  <Eye />
+                  <Eye className="h-4 w-4" />
                   {!collapsed && <span>Vision AI</span>}
                 </SidebarMenuButton>
               </SidebarMenuItem>
@@ -270,22 +252,17 @@ export function AppSidebar({
           </SidebarGroupContent>
         </SidebarGroup>
 
+        {/* ---------- New ---------- */}
         <SidebarGroup>
           <SidebarGroupContent>
             <SidebarMenu>
               <SidebarMenuItem key="menu-new">
                 <SidebarMenuButton
-                  onClick={() => {
-                    if (isOcr) {
-                      window.dispatchEvent(new CustomEvent("ocr:new"));
-                    } else {
-                      onNewChat();
-                    }
-                  }}
+                  onClick={() => { isOcr ? window.dispatchEvent(new CustomEvent("ocr:new")) : onNewChat(); }}
                   tooltip={{ children: isOcr ? "New Image" : "New Chat", hidden: false }}
                   className="overflow-hidden bg-gradient-to-r from-primary to-accent text-primary-foreground hover:brightness-110"
                 >
-                  <Plus />
+                  <Plus className="h-4 w-4" />
                   {!collapsed && <span className="font-medium">{isOcr ? "New Image" : "New Chat"}</span>}
                 </SidebarMenuButton>
               </SidebarMenuItem>
@@ -293,6 +270,7 @@ export function AppSidebar({
           </SidebarGroupContent>
         </SidebarGroup>
 
+        {/* ---------- OCR History ---------- */}
         {isOcr && !collapsed && (
           <SidebarGroup className="min-h-0 flex-1 overflow-hidden">
             <SidebarGroupLabel>OCR History</SidebarGroupLabel>
@@ -301,9 +279,7 @@ export function AppSidebar({
                 <SidebarMenu>
                   {ocrItems.length === 0 ? (
                     <SidebarMenuItem key="ocr-empty">
-                      <SidebarMenuButton disabled className="opacity-60">
-                        No history
-                      </SidebarMenuButton>
+                      <SidebarMenuButton disabled className="opacity-60">No history</SidebarMenuButton>
                     </SidebarMenuItem>
                   ) : (
                     ocrItems.map((item, idx) => (
@@ -313,12 +289,12 @@ export function AppSidebar({
                           className="overflow-hidden"
                           onClick={() => (window.location.href = `/ocr/${item.type}/${item.id}`)}
                         >
-                          <FileText />
-                          {!collapsed && <span className="truncate flex-1">{item.filename || (item.type === "bill" ? "Bill" : "Bank")}</span>}
-                          {!collapsed && item.approved && (
+                          <FileText className="h-4 w-4" />
+                          <span className="truncate flex-1">{item.filename || (item.type === "bill" ? "Bill" : "Bank")}</span>
+                          {item.approved && (
                             <CheckCircle2 className="ml-1 h-4 w-4 text-green-600 dark:text-green-400" aria-label="Approved" />
                           )}
-                          {!collapsed && <Badge variant="outline" className="ml-auto capitalize">{item.type}</Badge>}
+                          <Badge variant="outline" className="ml-auto capitalize">{item.type}</Badge>
                         </SidebarMenuButton>
                       </SidebarMenuItem>
                     ))
@@ -331,6 +307,7 @@ export function AppSidebar({
 
         <SidebarSeparator />
 
+        {/* ---------- Chat History ---------- */}
         {!collapsed && !isOcr && (
           <SidebarGroup className="min-h-0 flex-1 overflow-hidden">
             <SidebarGroupLabel>History</SidebarGroupLabel>
@@ -348,7 +325,7 @@ export function AppSidebar({
                             tooltip={{ children: chat.title, hidden: false }}
                             className="overflow-hidden"
                           >
-                            <MessageSquare />
+                            <MessageSquare className="h-4 w-4" />
                             <span className="truncate">{chat.title}</span>
                           </SidebarMenuButton>
                           <DropdownMenu>
@@ -356,14 +333,10 @@ export function AppSidebar({
                               <SidebarMenuAction aria-label="Chat actions">…</SidebarMenuAction>
                             </DropdownMenuTrigger>
                             <DropdownMenuContent align="end" className="z-50">
-                              <DropdownMenuItem
-                                onClick={() => {
-                                  const name = window.prompt("Rename chat", chat.title);
-                                  if (name) onRename(chatIdStr(chat.id), name);
-                                }}
-                              >
-                                Rename
-                              </DropdownMenuItem>
+                              <DropdownMenuItem onClick={() => {
+                                const name = window.prompt("Rename chat", chat.title);
+                                if (name) onRename(chatIdStr(chat.id), name);
+                              }}>Rename</DropdownMenuItem>
                               <DropdownMenuItem onClick={() => onDelete(chatIdStr(chat.id))}>Delete</DropdownMenuItem>
                             </DropdownMenuContent>
                           </DropdownMenu>
@@ -385,7 +358,7 @@ export function AppSidebar({
                             tooltip={{ children: chat.title, hidden: false }}
                             className="overflow-hidden"
                           >
-                            <MessageSquare />
+                            <MessageSquare className="h-4 w-4" />
                             <span className="truncate">{chat.title}</span>
                           </SidebarMenuButton>
                           <DropdownMenu>
@@ -393,14 +366,10 @@ export function AppSidebar({
                               <SidebarMenuAction aria-label="Chat actions">…</SidebarMenuAction>
                             </DropdownMenuTrigger>
                             <DropdownMenuContent align="end" className="z-50">
-                              <DropdownMenuItem
-                                onClick={() => {
-                                  const name = window.prompt("Rename chat", chat.title);
-                                  if (name) onRename(chatIdStr(chat.id), name);
-                                }}
-                              >
-                                Rename
-                              </DropdownMenuItem>
+                              <DropdownMenuItem onClick={() => {
+                                const name = window.prompt("Rename chat", chat.title);
+                                if (name) onRename(chatIdStr(chat.id), name);
+                              }}>Rename</DropdownMenuItem>
                               <DropdownMenuItem onClick={() => onDelete(chatIdStr(chat.id))}>Delete</DropdownMenuItem>
                             </DropdownMenuContent>
                           </DropdownMenu>
@@ -422,7 +391,7 @@ export function AppSidebar({
                             tooltip={{ children: chat.title, hidden: false }}
                             className="overflow-hidden"
                           >
-                            <MessageSquare />
+                            <MessageSquare className="h-4 w-4" />
                             <span className="truncate">{chat.title}</span>
                           </SidebarMenuButton>
                           <DropdownMenu>
@@ -430,14 +399,10 @@ export function AppSidebar({
                               <SidebarMenuAction aria-label="Chat actions">…</SidebarMenuAction>
                             </DropdownMenuTrigger>
                             <DropdownMenuContent align="end" className="z-50">
-                              <DropdownMenuItem
-                                onClick={() => {
-                                  const name = window.prompt("Rename chat", chat.title);
-                                  if (name) onRename(chatIdStr(chat.id), name);
-                                }}
-                              >
-                                Rename
-                              </DropdownMenuItem>
+                              <DropdownMenuItem onClick={() => {
+                                const name = window.prompt("Rename chat", chat.title);
+                                if (name) onRename(chatIdStr(chat.id), name);
+                              }}>Rename</DropdownMenuItem>
                               <DropdownMenuItem onClick={() => onDelete(chatIdStr(chat.id))}>Delete</DropdownMenuItem>
                             </DropdownMenuContent>
                           </DropdownMenu>
@@ -459,7 +424,7 @@ export function AppSidebar({
                             tooltip={{ children: chat.title, hidden: false }}
                             className="overflow-hidden"
                           >
-                            <MessageSquare />
+                            <MessageSquare className="h-4 w-4" />
                             <span className="truncate">{chat.title}</span>
                           </SidebarMenuButton>
                           <DropdownMenu>
@@ -467,14 +432,10 @@ export function AppSidebar({
                               <SidebarMenuAction aria-label="Chat actions">…</SidebarMenuAction>
                             </DropdownMenuTrigger>
                             <DropdownMenuContent align="end" className="z-50">
-                              <DropdownMenuItem
-                                onClick={() => {
-                                  const name = window.prompt("Rename chat", chat.title);
-                                  if (name) onRename(chatIdStr(chat.id), name);
-                                }}
-                              >
-                                Rename
-                              </DropdownMenuItem>
+                              <DropdownMenuItem onClick={() => {
+                                const name = window.prompt("Rename chat", chat.title);
+                                if (name) onRename(chatIdStr(chat.id), name);
+                              }}>Rename</DropdownMenuItem>
                               <DropdownMenuItem onClick={() => onDelete(chatIdStr(chat.id))}>Delete</DropdownMenuItem>
                             </DropdownMenuContent>
                           </DropdownMenu>
@@ -488,6 +449,7 @@ export function AppSidebar({
           </SidebarGroup>
         )}
 
+        {/* ---------- Footer / Profile ---------- */}
         <SidebarFooter className="mt-auto">
           <SidebarGroup>
             <SidebarGroupContent>
@@ -497,18 +459,21 @@ export function AppSidebar({
                     <PopoverTrigger asChild>
                       <SidebarMenuButton
                         tooltip={{ children: "Profile", hidden: false }}
-                        className={`overflow-hidden ${collapsed ? "w-full justify-center mx-auto" : "justify-start"}`}
+                        className={[
+                          "overflow-hidden",
+                          collapsed
+                            ? "h-10 w-10 justify-center -translate-x-1" // optical center when collapsed
+                            : "justify-start"
+                        ].join(" ")}
                       >
-                        <div className="[&_svg]:h-4 [&_svg]:w-4 relative">
-                          <User />
-                          <span
-                            className="absolute -top-0.5 -right-0.5 h-2 w-2 rounded-full bg-destructive"
-                            aria-hidden
-                          />
+                        <div className="relative">
+                          <User className="h-4 w-4" />
+                          <span className="absolute -top-0.5 -right-0.5 h-2 w-2 rounded-full bg-destructive" aria-hidden />
                         </div>
                         {!collapsed && <span>Profile</span>}
                       </SidebarMenuButton>
                     </PopoverTrigger>
+
                     <PopoverContent align="end" className="p-1 w-56">
                       <div className="flex flex-col">
                         <button className="flex items-center gap-2 px-2 py-2 rounded hover:bg-muted" onClick={() => (window.location.href = "/")}>
@@ -531,13 +496,8 @@ export function AppSidebar({
                           <button
                             className="flex items-center gap-2 px-2 py-2 rounded hover:bg-muted"
                             onClick={async () => {
-                              try {
-                                await service.signOut();
-                              } catch {
-                                // ignore
-                              } finally {
-                                window.location.href = "/auth";
-                              }
+                              try { await service.signOut(); } catch { /* ignore */ }
+                              window.location.href = "/auth";
                             }}
                           >
                             <LogOut className="h-4 w-4" /> Logout

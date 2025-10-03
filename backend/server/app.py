@@ -56,14 +56,36 @@ class Profile(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     def to_dict(self):
-        return {"id": self.id, "full_name": self.full_name, "avatar_url": self.avatar_url, "created_at": self.created_at.isoformat()}
+        return {
+            "id": self.id,
+            "full_name": self.full_name,
+            "avatar_url": self.avatar_url,
+            "created_at": self.created_at.isoformat(),
+        }
 
 
 class UserCredit(db.Model):
+    """
+    Per-user monthly credits with separate buckets.
+    """
     __tablename__ = "user_credits"
     id = db.Column(Integer, primary_key=True)  # same as users.id
-    credits = db.Column(Integer, default=1000)
+
+    # Plan & timing
+    plan = db.Column(String, default="free")  # "free" | "plus" | "business"
+    last_reset_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    # Chat bucket
+    chat_remaining = db.Column(Integer, default=0)
+    chat_monthly_limit = db.Column(Integer, default=0)
+
+    # OCR buckets
+    ocr_bill_remaining = db.Column(Integer, default=0)
+    ocr_bill_monthly_limit = db.Column(Integer, default=0)
+
+    ocr_bank_remaining = db.Column(Integer, default=0)
+    ocr_bank_monthly_limit = db.Column(Integer, default=0)
 
 
 class Chat(db.Model):
@@ -82,7 +104,7 @@ class Message(db.Model):
     id = db.Column(Integer, primary_key=True)
     chat_id = db.Column(Integer, db.ForeignKey("chats.id"), nullable=False)
     user_id = db.Column(Integer, db.ForeignKey("users.id"), nullable=True)
-    # stores dict like {"role":"user|assistant","text":"...","version":"V1|V2|V3","meta":{}}
+    # {"role":"user|assistant","text":"...","version":"V1|V2|V3","meta":{}}
     content_json = db.Column(SQLITE_JSON, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
@@ -123,10 +145,16 @@ class Session(db.Model):
     user_id = db.Column(Integer, db.ForeignKey("users.id"), nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
+# ------------------ Credit rules ------------------
+CHAT_VERSION_COST = {"V1": 1, "V2": 2, "V3": 3}
+PLAN_LIMITS = {
+    "free":     {"chat": 100,  "bill": 3,  "bank": 3},
+    "plus":     {"chat": 500,  "bill": 20, "bank": 20},
+    "business": {"chat": 2000, "bill": 100, "bank": 100},  # adjustable
+}
 
 # ------------------ Helpers ------------------
 def current_user():
-    """Return User instance from Bearer token; no abort."""
     token = request.headers.get("Authorization", "").replace("Bearer ", "")
     if not token:
         return None
@@ -136,7 +164,6 @@ def current_user():
 
 @app.before_request
 def attach_user():
-    # make user available as g.user for every request
     g.user = current_user()
 
 
@@ -148,7 +175,6 @@ def current_user_required():
 
 
 def ser(o):
-    """Serialize SQLAlchemy model to plain dict; lift content_json.role to top-level 'role'."""
     d = {c.name: getattr(o, c.name) for c in o.__table__.columns}
     for k, v in list(d.items()):
         if hasattr(v, "isoformat"):
@@ -173,7 +199,6 @@ def model_columns(Model):
 
 
 def sanitize_row(Model, row: dict):
-    """Map external keys to DB columns and drop everything else."""
     row = dict(row or {})
     cols = model_columns(Model)
     if "content" in row and "content_json" in cols and "content_json" not in row:
@@ -196,7 +221,6 @@ def add_cors_headers(resp):
 @app.route("/<path:_p>", methods=["OPTIONS"])
 def cors_preflight(_p):
     return make_response("", 204)
-
 
 # ------------------ DB init + auto-migration ------------------
 def column_exists(table: str, column: str) -> bool:
@@ -224,17 +248,103 @@ def auto_migrate():
             db.session.execute(text(f"ALTER TABLE {t} ADD COLUMN metadata_json TEXT"))
             db.session.commit()
 
+    # user_credits new columns
+    if column_exists("user_credits", "id"):
+        def addcol(coldef):
+            db.session.execute(text(f"ALTER TABLE user_credits ADD COLUMN {coldef}"))
 
-def _ensure_user(email, name, password="demo123", credits=1000, first_chat_title="General"):
+        if not column_exists("user_credits", "plan"):
+            addcol("plan TEXT")
+        if not column_exists("user_credits", "last_reset_at"):
+            addcol("last_reset_at TEXT")
+        if not column_exists("user_credits", "chat_remaining"):
+            addcol("chat_remaining INTEGER")
+        if not column_exists("user_credits", "chat_monthly_limit"):
+            addcol("chat_monthly_limit INTEGER")
+        if not column_exists("user_credits", "ocr_bill_remaining"):
+            addcol("ocr_bill_remaining INTEGER")
+        if not column_exists("user_credits", "ocr_bill_monthly_limit"):
+            addcol("ocr_bill_monthly_limit INTEGER")
+        if not column_exists("user_credits", "ocr_bank_remaining"):
+            addcol("ocr_bank_remaining INTEGER")
+        if not column_exists("user_credits", "ocr_bank_monthly_limit"):
+            addcol("ocr_bank_monthly_limit INTEGER")
+        db.session.commit()
+
+# ------------------ Credit helpers ------------------
+def _apply_plan_limits(row: UserCredit, plan: str, reset_all: bool):
+    lim = PLAN_LIMITS.get(plan, PLAN_LIMITS["free"])
+    row.plan = plan
+    row.chat_monthly_limit = lim["chat"]
+    row.ocr_bill_monthly_limit = lim["bill"]
+    row.ocr_bank_monthly_limit = lim["bank"]
+    if reset_all:
+        row.chat_remaining = lim["chat"]
+        row.ocr_bill_remaining = lim["bill"]
+        row.ocr_bank_remaining = lim["bank"]
+    else:
+        row.chat_remaining = min(int(row.chat_remaining or 0), lim["chat"])
+        row.ocr_bill_remaining = min(int(row.ocr_bill_remaining or 0), lim["bill"])
+        row.ocr_bank_remaining = min(int(row.ocr_bank_remaining or 0), lim["bank"])
+
+def _ensure_credit_row(user_id: int) -> UserCredit:
+    row = db.session.get(UserCredit, user_id)
+    if not row:
+        row = UserCredit(id=user_id, plan="free")
+        db.session.add(row)
+        db.session.commit()
+        _apply_plan_limits(row, "free", reset_all=True)
+        row.last_reset_at = datetime.utcnow()
+        row.updated_at = datetime.utcnow()
+        db.session.commit()
+    else:
+        if not row.plan:
+            _apply_plan_limits(row, "free", reset_all=False)
+            db.session.commit()
+    _auto_reset_if_needed(row)
+    return row
+
+def _auto_reset_if_needed(row: UserCredit):
+    now = datetime.utcnow()
+    last = row.last_reset_at or now
+    if not (now.year == last.year and now.month == last.month):
+        _apply_plan_limits(row, row.plan or "free", reset_all=True)
+        row.last_reset_at = now
+        row.updated_at = now
+        db.session.commit()
+
+def _credits_payload(user_id: int):
+    row = _ensure_credit_row(user_id)
+
+    def bake(rem, lim):
+        lim = int(lim or 0); rem = int(rem or 0)
+        used = max(0, lim - rem)
+        pct = 0 if lim == 0 else min(100, int(used / lim * 100))
+        return {"limit": lim, "remaining": rem, "used": used, "percent_used": pct}
+
+    return {
+        "plan": row.plan,
+        "chat": bake(row.chat_remaining, row.chat_monthly_limit),
+        "ocr_bill": bake(row.ocr_bill_remaining, row.ocr_bill_monthly_limit),
+        "ocr_bank": bake(row.ocr_bank_remaining, row.ocr_bank_monthly_limit),
+        "last_reset_at": (row.last_reset_at.isoformat() if row.last_reset_at else None),
+    }
+
+# ------------------ Seed ------------------
+def _ensure_user(email, name, password="demo123", plan="free"):
     u = User.query.filter_by(email=email).first()
     if not u:
         u = User(email=email, name=name, password_hash=generate_password_hash(password))
-        db.session.add(u)
-        db.session.commit()
+        db.session.add(u); db.session.commit()
         db.session.add(Profile(id=u.id, full_name=u.name))
-        db.session.add(UserCredit(id=u.id, credits=credits))
-        db.session.add(Chat(user_id=u.id, title=first_chat_title))
+        db.session.add(Chat(user_id=u.id, title="General"))
         db.session.commit()
+    # credits row (and plan)
+    row = _ensure_credit_row(u.id)
+    _apply_plan_limits(row, plan, reset_all=True)
+    row.last_reset_at = datetime.utcnow()
+    row.updated_at = datetime.utcnow()
+    db.session.commit()
     return u
 
 
@@ -242,17 +352,15 @@ def seed():
     db.create_all()
     auto_migrate()
 
-    _ensure_user("admin@example.com", "Admin", password="admin123", credits=1000)
-    _ensure_user("v1@example.com", "V1 User", password="admin123", credits=100)
-    _ensure_user("v2@example.com", "V2 User", password="admin123", credits=100)
-    _ensure_user("v3@example.com", "V3 User", password="admin123", credits=100)
-
+    _ensure_user("admin@example.com", "Admin", password="admin123", plan="business")
+    _ensure_user("v1@example.com", "V1 User", password="admin123", plan="free")
+    _ensure_user("v2@example.com", "V2 User", password="admin123", plan="plus")
+    _ensure_user("v3@example.com", "V3 User", password="admin123", plan="free")
 
 # ------------------ Health ------------------
 @app.get("/health")
 def health():
     return jsonify({"ok": True})
-
 
 # ------------------ Auth ------------------
 @app.post("/auth/signup")
@@ -266,18 +374,14 @@ def signup():
     if User.query.filter_by(email=email).first():
         return jsonify({"error": "email_in_use"}), 409
     u = User(email=email, name=name, password_hash=generate_password_hash(pw))
-    db.session.add(u)
-    db.session.commit()
+    db.session.add(u); db.session.commit()
     db.session.add(Profile(id=u.id, full_name=u.name))
-    db.session.add(UserCredit(id=u.id, credits=1000))
+    db.session.add(Chat(user_id=u.id, title="General"))
     db.session.commit()
+    _ensure_credit_row(u.id)  # default free plan with limits applied
     tok = secrets.token_hex(24)
-    db.session.add(Session(token=tok, user_id=u.id))
-    db.session.commit()
-    return jsonify(
-        {"user": {"id": u.id, "email": u.email, "name": u.name}, "session": {"access_token": tok}}
-    )
-
+    db.session.add(Session(token=tok, user_id=u.id)); db.session.commit()
+    return jsonify({"user": u.to_dict(include_profile=True), "session": {"access_token": tok}})
 
 @app.post("/auth/login")
 def login():
@@ -288,16 +392,13 @@ def login():
     if not u or not check_password_hash(u.password_hash, pw):
         return jsonify({"error": "invalid_credentials"}), 401
     tok = secrets.token_hex(24)
-    db.session.add(Session(token=tok, user_id=u.id))
-    db.session.commit()
-    return jsonify({"token": tok, "user": {"id": u.id, "email": u.email, "name": u.name}})
-
+    db.session.add(Session(token=tok, user_id=u.id)); db.session.commit()
+    return jsonify({"token": tok, "user": u.to_dict(include_profile=True)})
 
 @app.get("/auth/me")
 def me():
     u = g.user
     return jsonify({"user": None if not u else u.to_dict(include_profile=True)})
-
 
 @app.post("/auth/logout")
 def logout():
@@ -306,78 +407,64 @@ def logout():
     db.session.commit()
     return jsonify({"ok": True})
 
-
 # ------------------ Profile ------------------
 @app.get("/me")
 def get_me():
     u = current_user_required()
     return jsonify(u.to_dict(include_profile=True))
 
-
 @app.put("/me")
 def update_me():
     u = current_user_required()
     data = request.get_json() or {}
     u.name = data.get("name", u.name)
-    prof = db.session.get(Profile, u.id)
-    if not prof:
-        prof = Profile(id=u.id)
-        db.session.add(prof)
+    prof = db.session.get(Profile, u.id) or Profile(id=u.id)
+    db.session.add(prof)
     prof.full_name = data.get("full_name", prof.full_name)
     prof.avatar_url = data.get("avatar_url", prof.avatar_url)
     db.session.commit()
     return jsonify(u.to_dict(include_profile=True))
 
-
-# ------------------ RPC: credits ------------------
-def _credits_payload(user_id: int):
-    row = db.session.get(UserCredit, user_id)
-    if not row:
-        row = UserCredit(id=user_id, credits=1000)
-        db.session.add(row)
-        db.session.commit()
-    return {"remaining": int(row.credits or 0)}
-
-
+# ------------------ Credits RPCs ------------------
 @app.post("/rpc/get_credits")
 def rpc_get_credits():
     u = current_user_required()
     return jsonify({"data": {"credits": _credits_payload(u.id)}})
 
-
 @app.post("/rpc/reset_monthly_credits")
 def rpc_reset_monthly_credits():
     u = current_user_required()
-    row = db.session.get(UserCredit, u.id)
-    if not row:
-        row = UserCredit(id=u.id, credits=1000)
-        db.session.add(row)
-    else:
-        row.credits = 1000
-        row.updated_at = datetime.utcnow()
+    row = _ensure_credit_row(u.id)
+    _apply_plan_limits(row, row.plan, reset_all=True)
+    row.last_reset_at = datetime.utcnow()
+    row.updated_at = datetime.utcnow()
     db.session.commit()
     return jsonify({"data": {"ok": True, "credits": _credits_payload(u.id)}})
 
+@app.post("/rpc/set_plan")
+def rpc_set_plan():
+    u = current_user_required()
+    plan = (request.get_json() or {}).get("plan", "free").lower()
+    if plan not in PLAN_LIMITS:
+        return jsonify({"error": "unknown_plan"}), 400
+    row = _ensure_credit_row(u.id)
+    _apply_plan_limits(row, plan, reset_all=True)
+    row.last_reset_at = datetime.utcnow()
+    row.updated_at = datetime.utcnow()
+    db.session.commit()
+    return jsonify({"data": {"ok": True, "credits": _credits_payload(u.id)}})
 
-# ------------------ Functions (chat + router) ------------------
+# ------------------ Chat / Router ------------------
 def _ensure_user_message_inserted(u, chat_id: int, text: str, version: str = "V2"):
-    # enforce chat ownership
     c = db.session.get(Chat, int(chat_id))
     if not c or c.user_id != u.id:
         abort(404)
-    m = Message(
-        chat_id=int(chat_id),
-        user_id=u.id,
-        content_json={"role": "user", "text": text, "version": version, "meta": {}},
-    )
-    db.session.add(m)
-    db.session.commit()
-    socketio.emit(
-        "db_change",
-        {"eventType": "INSERT", "schema": "public", "table": "messages", "new": ser(m), "old": None},
-    )
+    m = Message(chat_id=int(chat_id), user_id=u.id,
+                content_json={"role": "user", "text": text, "version": version, "meta": {}})
+    db.session.add(m); db.session.commit()
+    socketio.emit("db_change", {"eventType": "INSERT","schema": "public",
+                                "table": "messages","new": ser(m), "old": None})
     return m
-
 
 @app.post("/functions/v1/<name>")
 def functions_invoke(name):
@@ -387,32 +474,22 @@ def functions_invoke(name):
     if name in ("chat", "chat-router"):
         chat_id = body.get("chat_id")
         version = (body.get("version") or "V2").upper()
+        cost = CHAT_VERSION_COST.get(version, 2)
 
-        # --- Credits check FIRST ---
-        credits_row = db.session.get(UserCredit, u.id)
-        if not credits_row:
-            credits_row = UserCredit(id=u.id, credits=1000)
-            db.session.add(credits_row)
-            db.session.commit()
-
-        if (credits_row.credits or 0) <= 0:
-            return jsonify(
-                {
-                    "errorCode": "INSUFFICIENT_CREDITS",
-                    "message": "Not enough credits",
-                    "data": {"credits": {"remaining": int(credits_row.credits or 0)}},
-                }
-            )
+        row = _ensure_credit_row(u.id)
+        if (row.chat_remaining or 0) < cost:
+            return jsonify({
+                "errorCode": "INSUFFICIENT_CREDITS",
+                "message": f"Not enough chat credits (need {cost}).",
+                "data": {"credits": _credits_payload(u.id)}
+            }), 402
 
         last_text = body.get("text") or body.get("user_text") or ""
-
         if not chat_id:
             chat = Chat(user_id=u.id, title="New Chat")
-            db.session.add(chat)
-            db.session.commit()
+            db.session.add(chat); db.session.commit()
             chat_id = chat.id
         else:
-            # ownership check for provided chat
             chat = db.session.get(Chat, int(chat_id))
             if not chat or chat.user_id != u.id:
                 abort(404)
@@ -420,45 +497,70 @@ def functions_invoke(name):
         if last_text:
             _ensure_user_message_inserted(u, int(chat_id), last_text, version)
 
-        # version-specific temporary reply
         label = "V1" if version == "V1" else "V3" if version == "V3" else "V2"
         reply = f"Temporary reply message from {label}"
 
-        # Insert assistant message
-        m = Message(
-            chat_id=int(chat_id),
-            user_id=u.id,
-            content_json={"role": "assistant", "text": reply, "version": version, "meta": {}},
-        )
+        m = Message(chat_id=int(chat_id), user_id=u.id,
+                    content_json={"role": "assistant", "text": reply, "version": version, "meta": {}})
         db.session.add(m)
 
         chat.last_message = reply
         chat.messages_count = (chat.messages_count or 0) + 1
         chat.updated_at = datetime.utcnow()
 
-        # Decrement 1 credit
-        credits_row.credits = max(0, (credits_row.credits or 0) - 1)
-        credits_row.updated_at = datetime.utcnow()
+        # decrement version cost
+        row.chat_remaining = max(0, int(row.chat_remaining or 0) - cost)
+        row.updated_at = datetime.utcnow()
         db.session.commit()
 
-        socketio.emit(
-            "db_change",
-            {"eventType": "INSERT", "schema": "public", "table": "messages", "new": ser(m), "old": None},
-        )
+        socketio.emit("db_change",
+                      {"eventType": "INSERT","schema":"public","table":"messages","new": ser(m), "old": None})
 
-        return jsonify(
-            {
-                "data": {
-                    "choices": [{"message": {"role": "assistant", "content": reply}}],
-                    "chat_id": chat_id,
-                    "credits": int(credits_row.credits or 0),
-                    "assistant": ser(m),
-                }
+        return jsonify({
+            "data": {
+                "choices": [{"message": {"role": "assistant", "content": reply}}],
+                "chat_id": chat_id,
+                "credits": _credits_payload(u.id),
+                "assistant": ser(m),
             }
-        )
+        })
 
     return jsonify({"data": {"ok": True}})
 
+# ------------------ OCR Analyze Endpoints ------------------
+@app.post("/ocr/analyze_bill")
+def ocr_analyze_bill():
+    u = current_user_required()
+    row = _ensure_credit_row(u.id)
+    if (row.ocr_bill_remaining or 0) < 1:
+        return jsonify({
+            "errorCode": "INSUFFICIENT_CREDITS",
+            "message": "No Bill OCR credits left.",
+            "data": {"credits": _credits_payload(u.id)}
+        }), 402
+
+    # ... your OCR work here ...
+    row.ocr_bill_remaining = max(0, int(row.ocr_bill_remaining or 0) - 1)
+    row.updated_at = datetime.utcnow()
+    db.session.commit()
+    return jsonify({"data": {"ok": True, "credits": _credits_payload(u.id)}})
+
+@app.post("/ocr/analyze_bank")
+def ocr_analyze_bank():
+    u = current_user_required()
+    row = _ensure_credit_row(u.id)
+    if (row.ocr_bank_remaining or 0) < 1:
+        return jsonify({
+            "errorCode": "INSUFFICIENT_CREDITS",
+            "message": "No Bank OCR credits left.",
+            "data": {"credits": _credits_payload(u.id)}
+        }), 402
+
+    # ... your OCR work here ...
+    row.ocr_bank_remaining = max(0, int(row.ocr_bank_remaining or 0) - 1)
+    row.updated_at = datetime.utcnow()
+    db.session.commit()
+    return jsonify({"data": {"ok": True, "credits": _credits_payload(u.id)}})
 
 # ------------------ Notifications ------------------
 @app.get("/db/notifications")
@@ -466,7 +568,6 @@ def list_notifications():
     u = current_user_required()
     rows = Notification.query.filter_by(user_id=u.id).order_by(Notification.created_at.desc()).all()
     return jsonify([ser(r) for r in rows])
-
 
 @app.post("/db/notifications")
 def create_notification():
@@ -476,8 +577,7 @@ def create_notification():
     db.session.add(n); db.session.commit()
     return jsonify(ser(n)), 201
 
-
-# ------------------ Generic DB endpoints with user scoping ------------------
+# ------------------ Generic DB endpoints (user-scoped) ------------------
 TABLES = {
     "users": User,
     "profiles": Profile,
@@ -493,12 +593,10 @@ def _has_user_id(Model):
     return "user_id" in model_columns(Model)
 
 def _scope_query_to_user(Model, q):
-    """If the model has user_id, restrict to current user's rows."""
     if _has_user_id(Model):
         u = current_user_required()
         q = q.filter(getattr(Model, "user_id") == u.id)
     return q
-
 
 @app.get("/db/<table>")
 def table_select(table):
@@ -517,15 +615,12 @@ def table_select(table):
     order_asc = args.pop("_order_asc", "1") == "1"
 
     q = _scope_query_to_user(Model, Model.query)
-    # Allow additional equals filters, still under user scope
     for k, v in args.items():
         if hasattr(Model, k):
             q = q.filter(getattr(Model, k) == v)
 
     if order_col and hasattr(Model, order_col):
-        q = q.order_by(
-            getattr(Model, order_col).asc() if order_asc else getattr(Model, order_col).desc()
-        )
+        q = q.order_by(getattr(Model, order_col).asc() if order_asc else getattr(Model, order_col).desc())
     if offset:
         q = q.offset(offset)
     if limit:
@@ -533,7 +628,6 @@ def table_select(table):
 
     rows = q.all()
     return jsonify({"rows": [ser(r) for r in rows]})
-
 
 @app.post("/db/<table>")
 def table_insert(table):
@@ -552,32 +646,25 @@ def table_insert(table):
     inserted = []
     for row in values:
         clean = sanitize_row(Model, row)
-
-        # Always stamp/override user_id if the model has it
         if _has_user_id(Model):
             clean["user_id"] = u.id
-
-        # Extra guard: messages must belong to a chat owned by user
         if Model is Message:
             chat_id = int(clean.get("chat_id") or 0)
             chat = db.session.get(Chat, chat_id)
             if not chat or chat.user_id != u.id:
                 abort(404)
-            # Normalize content_json
             cj = clean.get("content_json")
             if isinstance(cj, str):
                 try:
                     clean["content_json"] = json.loads(cj)
                 except Exception:
                     clean["content_json"] = {"text": str(cj)}
-
         m = Model(**clean)
         db.session.add(m)
         inserted.append(m)
 
     db.session.commit()
 
-    # Maintain chat counters + realtime when inserting messages
     if Model is Message:
         for m in inserted:
             chat = db.session.get(Chat, m.chat_id)
@@ -589,13 +676,10 @@ def table_insert(table):
                 chat.updated_at = datetime.utcnow()
         db.session.commit()
         for m in inserted:
-            socketio.emit(
-                "db_change",
-                {"eventType": "INSERT", "schema": "public", "table": "messages", "new": ser(m), "old": None},
-            )
+            socketio.emit("db_change",
+                          {"eventType": "INSERT","schema":"public","table":"messages","new": ser(m), "old": None})
 
     return jsonify({"rows": [ser(x) for x in inserted]}), 201
-
 
 @app.patch("/db/<table>")
 def table_update(table):
@@ -617,9 +701,7 @@ def table_update(table):
     olds = [ser(r) for r in rows]
     cols = model_columns(Model)
 
-    # Never allow user_id to be changed from client
     values.pop("user_id", None)
-
     if "content" in values and "content_json" in cols:
         values["content_json"] = values.pop("content")
     if "metadata" in values and "metadata_json" in cols:
@@ -635,13 +717,10 @@ def table_update(table):
     db.session.commit()
 
     for old, r in zip(olds, rows):
-        socketio.emit(
-            "db_change",
-            {"eventType": "UPDATE", "schema": "public", "table": table, "new": ser(r), "old": old},
-        )
+        socketio.emit("db_change",
+                      {"eventType": "UPDATE","schema":"public","table": table,"new": ser(r),"old": old})
 
     return jsonify({"rows": [ser(r) for r in rows]})
-
 
 @app.delete("/db/<table>")
 def table_delete(table):
@@ -663,19 +742,15 @@ def table_delete(table):
     db.session.commit()
 
     for row in payload:
-        socketio.emit(
-            "db_change",
-            {"eventType": "DELETE", "schema": "public", "table": table, "new": None, "old": row},
-        )
+        socketio.emit("db_change",
+                      {"eventType": "DELETE","schema":"public","table": table,"new": None,"old": row})
 
     return jsonify({"rows": payload})
-
 
 # ------------------ WebSocket ------------------
 @socketio.on("connect")
 def ws_connect():
     emit("connected", {"ok": True})
-
 
 # ------------------ Main ------------------
 if __name__ == "__main__":
