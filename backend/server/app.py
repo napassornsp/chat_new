@@ -97,22 +97,25 @@ class Message(db.Model):
     content_json = db.Column(SQLITE_JSON, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
+# ---------- OCR (new columns used by frontend) ----------
 class OCRBillExtract(db.Model):
     __tablename__ = "ocr_bill_extractions"
     id = db.Column(Integer, primary_key=True)
     user_id = db.Column(Integer, db.ForeignKey("users.id"), nullable=True)
-    file_name = db.Column(String, nullable=True)
-    text = db.Column(Text, nullable=True)
-    metadata_json = db.Column(SQLITE_JSON, nullable=True)
+    filename = db.Column(String, nullable=True)
+    file_url = db.Column(String, nullable=True)
+    approved = db.Column(Integer, default=0)  # 0/1; exposed as bool in serializer
+    data_json = db.Column(SQLITE_JSON, nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 class OCRBankExtract(db.Model):
     __tablename__ = "ocr_bank_extractions"
     id = db.Column(Integer, primary_key=True)
     user_id = db.Column(Integer, db.ForeignKey("users.id"), nullable=True)
-    file_name = db.Column(String, nullable=True)
-    text = db.Column(Text, nullable=True)
-    metadata_json = db.Column(SQLITE_JSON, nullable=True)
+    filename = db.Column(String, nullable=True)
+    file_url = db.Column(String, nullable=True)
+    approved = db.Column(Integer, default=0)
+    data_json = db.Column(SQLITE_JSON, nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 class Notification(db.Model):
@@ -131,58 +134,27 @@ class Session(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 # ---------- Vision: Flower (YOLO-style dummy) ----------
-# --- YOLO dummy detection -----------------------------------------------------
 @app.post("/vision/yolo/detect")
 def yolo_detect():
     """
     Accepts multipart/form-data with 'file'
     Returns YOLO-like dummy boxes so the frontend can render rectangles.
-
-    Response:
-    {
-      "image": {"width": int, "height": int},
-      "boxes": [
-        {"label": "rose", "conf": 0.95, "xyxy": [x1,y1,x2,y2], "color": "#hex"},
-        ...
-      ]
-    }
     """
     f = request.files.get("file")
     w, h = 640, 480
-
-    # Try to determine image size if Pillow is available
     try:
-        if f is not None:
-            from PIL import Image
+        if f is not None and Image is not None:
             im = Image.open(f.stream)
             w, h = im.size
     except Exception:
-        pass  # keep defaults
+        pass
 
-    # Make 3 stable dummy boxes proportional to the image size
     boxes = [
-        {
-            "label": "Rose",
-            "conf": 0.95,
-            "xyxy": [int(0.05 * w), int(0.15 * h), int(0.45 * w), int(0.70 * h)],
-            "color": "#ef4444",  # red
-        },
-        {
-            "label": "Tulip",
-            "conf": 0.88,
-            "xyxy": [int(0.55 * w), int(0.25 * h), int(0.90 * w), int(0.70 * h)],
-            "color": "#22c55e",  # green
-        },
-        {
-            "label": "Sunflower",
-            "conf": 0.82,
-            "xyxy": [int(0.62 * w), int(0.06 * h), int(0.95 * w), int(0.24 * h)],
-            "color": "#06b6d4",  # cyan
-        },
+        {"label": "Rose","conf": 0.95,"xyxy": [int(0.05*w), int(0.15*h), int(0.45*w), int(0.70*h)],"color": "#ef4444"},
+        {"label": "Tulip","conf": 0.88,"xyxy": [int(0.55*w), int(0.25*h), int(0.90*w), int(0.70*h)],"color": "#22c55e"},
+        {"label": "Sunflower","conf": 0.82,"xyxy": [int(0.62*w), int(0.06*h), int(0.95*w), int(0.24*h)],"color": "#06b6d4"},
     ]
-
     return jsonify({"image": {"width": w, "height": h}, "boxes": boxes})
-
 
 # ---------- Vision: Food Classification (mock) ----------
 @app.post("/vision/food/classify")
@@ -191,35 +163,21 @@ def vision_food_classify():
     Mock classifier: returns a few food classes with confidences.
     Expects multipart/form-data with a 'file' field.
     """
-    # Require a logged-in user (remove if you want it public)
-    u = current_user_required()
-
-    # Default image size if we can't read it
+    current_user_required()
     width, height = 640, 480
-
-    # Try to get real dimensions if Pillow is available
     try:
         f = request.files.get("file")
         if f and Image is not None:
-            img = Image.open(f.stream)
-            width, height = img.size
-        # If Pillow isn't installed or file missing, we simply keep defaults
+            img = Image.open(f.stream); width, height = img.size
     except Exception:
         pass
 
-    # Mock results (adjust as you like)
     classes = [
         {"label": "Italian Cuisine", "confidence": 0.95},
         {"label": "Pasta", "confidence": 0.88},
         {"label": "Tomato Sauce", "confidence": 0.82},
     ]
-
-    # You can randomize or branch on filename here if desired
-    return jsonify({
-        "image": {"width": width, "height": height},
-        "classes": classes,
-    })
-
+    return jsonify({"image": {"width": width, "height": height}, "classes": classes})
 
 # ---------- Helpers ----------
 def now_ym():
@@ -247,6 +205,8 @@ def ser(o):
     for k, v in list(d.items()):
         if hasattr(v, "isoformat"):
             d[k] = v.isoformat()
+
+    # messages content
     if "content_json" in d:
         cj = d.pop("content_json")
         try:
@@ -256,8 +216,22 @@ def ser(o):
         d["content"] = cj
         if isinstance(cj, dict) and "role" in cj and "role" not in d:
             d["role"] = cj["role"]
-    if "metadata_json" in d:
-        d["metadata"] = d.pop("metadata_json")
+
+    # OCR unified keys
+    if "data_json" in d:
+        d["data"] = d.pop("data_json")
+    if "approved" in d:
+        try:
+            d["approved"] = bool(int(d["approved"]))
+        except Exception:
+            d["approved"] = bool(d["approved"])
+
+    # legacy compatibility fallbacks
+    if "filename" in d and (d["filename"] is None or d["filename"] == "") and "file_name" in d:
+        d["filename"] = d.get("file_name")
+    if "metadata_json" in d and "data" not in d:
+        d["data"] = d.pop("metadata_json")
+
     return d
 
 def model_columns(Model):
@@ -266,10 +240,22 @@ def model_columns(Model):
 def sanitize_row(Model, row: dict):
     row = dict(row or {})
     cols = model_columns(Model)
+
+    # chat/messages
     if "content" in row and "content_json" in cols and "content_json" not in row:
         row["content_json"] = row.pop("content")
-    if "metadata" in row and "metadata_json" in cols and "metadata_json" not in row:
-        row["metadata_json"] = row.pop("metadata")
+
+    # OCR data normalization
+    if "data" in row and "data_json" in cols and "data_json" not in row:
+        row["data_json"] = row.pop("data")
+
+    # filename alias for legacy tables (if someone still posts 'filename')
+    if "filename" in row and "filename" not in cols and "file_name" in cols:
+        row["file_name"] = row.pop("filename")
+
+    # never allow overriding user_id
+    row.pop("user_id", None)
+
     return {k: v for k, v in row.items() if k in cols}
 
 @app.after_request
@@ -291,13 +277,26 @@ def column_exists(table: str, column: str) -> bool:
     return any(r["name"] == column for r in rows)
 
 def auto_migrate():
+    # messages.content_json
     if column_exists("messages", "id") and not column_exists("messages", "content_json"):
         db.session.execute(text("ALTER TABLE messages ADD COLUMN content_json TEXT"))
         db.session.commit()
+
+    # ensure modern OCR columns exist & copy legacy metadata_json -> data_json if needed
     for t in ("ocr_bill_extractions", "ocr_bank_extractions"):
-        if column_exists(t, "id") and not column_exists(t, "metadata_json"):
-            db.session.execute(text(f"ALTER TABLE {t} ADD COLUMN metadata_json TEXT"))
-            db.session.commit()
+        if column_exists(t, "id"):
+            if not column_exists(t, "filename"):
+                db.session.execute(text(f"ALTER TABLE {t} ADD COLUMN filename TEXT"))
+            if not column_exists(t, "file_url"):
+                db.session.execute(text(f"ALTER TABLE {t} ADD COLUMN file_url TEXT"))
+            if not column_exists(t, "approved"):
+                db.session.execute(text(f"ALTER TABLE {t} ADD COLUMN approved INTEGER DEFAULT 0"))
+            if not column_exists(t, "data_json"):
+                db.session.execute(text(f"ALTER TABLE {t} ADD COLUMN data_json TEXT"))
+            if column_exists(t, "metadata_json"):
+                db.session.execute(text(f"UPDATE {t} SET data_json = COALESCE(data_json, metadata_json)"))
+        db.session.commit()
+
     # new credit fields
     if not column_exists("user_credits", "plan"):
         db.session.execute(text("ALTER TABLE user_credits ADD COLUMN plan TEXT DEFAULT 'free'"))
@@ -373,15 +372,12 @@ def _ensure_user(
     u = User.query.filter_by(email=email).first()
     if not u:
         u = User(email=email, name=name, password_hash=generate_password_hash(password))
-        db.session.add(u)
-        db.session.commit()
+        db.session.add(u); db.session.commit()
 
-    # Profile
     prof = db.session.get(Profile, u.id)
     if not prof:
         db.session.add(Profile(id=u.id, full_name=name))
 
-    # Credits (monthly counters & plan)
     uc = db.session.get(UserCredit, u.id)
     if not uc:
         db.session.add(
@@ -395,17 +391,12 @@ def _ensure_user(
             )
         )
     else:
-        # Make sure plan & month are sane
         if uc.plan != plan:
             uc.plan = plan
         if uc.last_reset_at != now_ym():
-            uc.chat_used = 0
-            uc.ocr_bill_used = 0
-            uc.ocr_bank_used = 0
-            uc.last_reset_at = now_ym()
+            uc.chat_used = 0; uc.ocr_bill_used = 0; uc.ocr_bank_used = 0; uc.last_reset_at = now_ym()
         uc.updated_at = datetime.utcnow()
 
-    # At least one chat
     if not Chat.query.filter_by(user_id=u.id).first():
         db.session.add(Chat(user_id=u.id, title=first_chat_title))
 
@@ -416,24 +407,10 @@ def seed():
     db.create_all()
     auto_migrate()
 
-    # Admin: unlimited-ish via plan 'admin'
-    _ensure_user(
-        "admin@example.com",
-        "Admin",
-        password="admin123",
-        plan="admin",
-        first_chat_title="Welcome",
-    )
-
-    # Regular user: free plan
-    _ensure_user(
-        "user@example.com",
-        "V1 User",
-        password="user123",
-        plan="free",
-        first_chat_title="Welcome",
-    )
-
+    # Admin
+    _ensure_user("admin@example.com","Admin",password="admin123",plan="admin",first_chat_title="Welcome")
+    # Regular user
+    _ensure_user("user@example.com","V1 User",password="user123",plan="free",first_chat_title="Welcome")
 
 # ---------- Health ----------
 @app.get("/health")
@@ -502,14 +479,12 @@ def update_me():
     return jsonify(u.to_dict(include_profile=True))
 
 # ---------- Credits ----------
-
 @app.post("/rpc/get_credits")
 def rpc_get_credits():
-    u = current_user_required()
-    row = load_or_create_credits(u.id)
+    current_user_required()
+    row = load_or_create_credits(g.user.id)
     db.session.commit()
     payload = credits_payload(row)
-    # Convenience number for headers/old clients
     payload["remaining_simple"] = int(payload["chat"]["remaining"])
     return jsonify({"data": {"credits": payload}})
 
@@ -526,7 +501,7 @@ def _ensure_user_message_inserted(u, chat_id: int, text: str, version: str):
 
 @app.post("/functions/v1/<name>")
 def functions_invoke(name):
-    u = current_user_required()
+    current_user_required()
     body = request.get_json(silent=True) or {}
     if name not in ("chat", "chat-router"):
         return jsonify({"data": {"ok": True}})
@@ -534,8 +509,7 @@ def functions_invoke(name):
     version = (body.get("version") or "V2").upper()
     cost = CHAT_COST.get(version, 2)
 
-    # credits check
-    row = load_or_create_credits(u.id)
+    row = load_or_create_credits(g.user.id)
     lim = plan_limits(row.plan)
     reset_month_if_needed(row)
     db.session.commit()
@@ -551,28 +525,27 @@ def functions_invoke(name):
     chat_id = body.get("chat_id")
     text = body.get("text") or body.get("user_text") or ""
     if not chat_id:
-        c = Chat(user_id=u.id, title="New Chat")
+        c = Chat(user_id=g.user.id, title="New Chat")
         db.session.add(c); db.session.commit()
         chat_id = c.id
     else:
         c = db.session.get(Chat, int(chat_id))
-        if not c or c.user_id != u.id:
+        if not c or c.user_id != g.user.id:
             abort(404)
 
     if text:
-        _ensure_user_message_inserted(u, int(chat_id), text, version)
+        _ensure_user_message_inserted(g.user, int(chat_id), text, version)
 
     label = "V1" if version=="V1" else "V3" if version=="V3" else "V2"
     reply = f"Temporary reply message from {label}"
 
-    m = Message(chat_id=int(chat_id), user_id=u.id,
+    m = Message(chat_id=int(chat_id), user_id=g.user.id,
                 content_json={"role":"assistant","text":reply,"version":version,"meta":{}})
     db.session.add(m)
     c.last_message = reply
     c.messages_count = (c.messages_count or 0) + 1
     c.updated_at = datetime.utcnow()
 
-    # spend credits
     row.chat_used = (row.chat_used or 0) + cost
     row.updated_at = datetime.utcnow()
     db.session.commit()
@@ -584,22 +557,156 @@ def functions_invoke(name):
             "choices": [{"message": {"role": "assistant", "content": reply}}],
             "chat_id": chat_id,
             "assistant": ser(m),
-            "credits": credits_payload(row)  # unified payload
+            "credits": credits_payload(row)
         }
     })
+
+# ---------- Vision: OCR (mock extractors that charge monthly OCR credits) ----------
+def _ocr_charge_and_payload(kind: str):
+    """kind = 'bill' | 'bank'"""
+    current_user_required()
+    row = load_or_create_credits(g.user.id)
+    reset_month_if_needed(row)
+    limits = plan_limits(row.plan)
+
+    used_attr = "ocr_bill_used" if kind == "bill" else "ocr_bank_used"
+    used = getattr(row, used_attr) or 0
+    limit = limits["bill"] if kind == "bill" else limits["bank"]
+    remaining = max(0, limit - used)
+    if remaining <= 0:
+        return None, jsonify({
+            "errorCode": "INSUFFICIENT_CREDITS",
+            "message": "Not enough OCR credits",
+            "data": {"credits": credits_payload(row)}
+        }), 200
+
+    setattr(row, used_attr, used + 1)
+    row.updated_at = datetime.utcnow()
+    db.session.commit()
+    return row, None, None
+
+@app.post("/vision/ocr/bill")
+def vision_ocr_bill():
+    row, err_resp, err_code = _ocr_charge_and_payload("bill")
+    if err_resp is not None:
+        return err_resp, err_code
+
+    f = request.files.get("file")
+    filename = getattr(f, "filename", None)
+
+    fields = {
+        "buyer_name_thai": "",
+        "seller_name_thai": "",
+        "doc_number": "",
+        "doc_date": datetime.utcnow().strftime("%Y-%m-%d"),
+        "currency": "THB",
+        "sub_total": 0,
+        "vat_percent": 7,
+        "vat_amount": 0,
+        "total_due_amount": 0,
+        "table": [],
+    }
+
+    return jsonify({
+        "data": {"fields": fields, "filename": filename},
+        "credits": credits_payload(row),
+    })
+
+@app.post("/vision/ocr/bank")
+def vision_ocr_bank():
+    row, err_resp, err_code = _ocr_charge_and_payload("bank")
+    if err_resp is not None:
+        return err_resp, err_code
+
+    f = request.files.get("file")
+    filename = getattr(f, "filename", None)
+
+    fields = {
+        "account_number": "",
+        "statement_period": "",
+        "currency": "THB",
+        "opening_balance": 0,
+        "closing_balance": 0,
+        "table": [],
+    }
+
+    return jsonify({
+        "data": {"fields": fields, "filename": filename},
+        "credits": credits_payload(row),
+    })
+
+# ---------- Vision: Pet Classification (mock) ----------
+@app.post("/vision/pet/classify")
+def vision_pet_classify():
+    current_user_required()
+    # try to read image size if Pillow exists (optional)
+    width, height = 640, 480
+    try:
+        f = request.files.get("file")
+        if f and Image is not None:
+            img = Image.open(f.stream); width, height = img.size
+    except Exception:
+        pass
+    classes = [
+        {"label": "Dog", "confidence": 0.93},
+        {"label": "Cat", "confidence": 0.86},
+        {"label": "Rabbit", "confidence": 0.21},
+    ]
+    return jsonify({"image": {"width": width, "height": height}, "classes": classes})
+
+# ---------- Vision: Pet Detection (mock) ----------
+@app.post("/vision/pet/detect")
+def vision_pet_detect():
+    current_user_required()
+    f = request.files.get("file")
+    w, h = 640, 480
+    try:
+        if f is not None and Image is not None:
+            im = Image.open(f.stream); w, h = im.size
+    except Exception:
+        pass
+    boxes = [
+        {"label": "Dog", "conf": 0.91, "xyxy": [int(0.10*w), int(0.20*h), int(0.55*w), int(0.85*h)], "color": "#f59e0b"},
+        {"label": "Cat", "conf": 0.78, "xyxy": [int(0.60*w), int(0.25*h), int(0.92*w), int(0.75*h)], "color": "#3b82f6"},
+    ]
+    return jsonify({"image": {"width": w, "height": h}, "boxes": boxes})
+
+
+
+# ---------- OCR: unified history ----------
+@app.get("/ocr/history")
+def ocr_history():
+    current_user_required()
+    bills = OCRBillExtract.query.filter_by(user_id=g.user.id).all()
+    banks = OCRBankExtract.query.filter_by(user_id=g.user.id).all()
+
+    def shape(row, kind):
+        d = ser(row)
+        d["type"] = kind           # "bill" | "bank"
+        d["id"] = row.id
+        d["created_at"] = d.get("created_at")
+        d["filename"] = d.get("filename") or d.get("file_name")
+        d["file_url"] = d.get("file_url")
+        d["approved"] = bool(d.get("approved", False))
+        return d
+
+    items = [shape(b, "bill") for b in bills] + [shape(b, "bank") for b in banks]
+    items.sort(key=lambda x: x.get("created_at") or "", reverse=True)
+    return jsonify({"rows": items})
+
 
 # ---------- Notifications (scoped) ----------
 @app.get("/db/notifications")
 def list_notifications():
-    u = current_user_required()
-    rows = Notification.query.filter_by(user_id=u.id).order_by(Notification.created_at.desc()).all()
+    current_user_required()
+    rows = Notification.query.filter_by(user_id=g.user.id).order_by(Notification.created_at.desc()).all()
     return jsonify([ser(r) for r in rows])
 
 @app.post("/db/notifications")
 def create_notification():
-    u = current_user_required()
+    current_user_required()
     data = request.get_json() or {}
-    n = Notification(user_id=u.id, title=data.get("title",""), body=data.get("body",""))
+    n = Notification(user_id=g.user.id, title=data.get("title",""), body=data.get("body",""))
     db.session.add(n); db.session.commit()
     return jsonify(ser(n)), 201
 
@@ -615,8 +722,8 @@ def _has_user_id(Model): return "user_id" in model_columns(Model)
 
 def _scope_query_to_user(Model, q):
     if _has_user_id(Model):
-        u = current_user_required()
-        q = q.filter(getattr(Model, "user_id") == u.id)
+        current_user_required()
+        q = q.filter(getattr(Model, "user_id") == g.user.id)
     return q
 
 @app.get("/db/<table>")
@@ -643,7 +750,7 @@ def table_select(table):
 
 @app.post("/db/<table>")
 def table_insert(table):
-    u = current_user_required()
+    current_user_required()
     Model = TABLES.get(table)
     if not Model: return jsonify({"error":"unknown_table"}), 400
     body = request.get_json() or {}
@@ -653,11 +760,11 @@ def table_insert(table):
     inserted=[]
     for row in values:
         clean = sanitize_row(Model, row)
-        if _has_user_id(Model): clean["user_id"] = u.id
+        if _has_user_id(Model): clean["user_id"] = g.user.id
         if Model is Message:
             chat_id = int(clean.get("chat_id") or 0)
             chat = db.session.get(Chat, chat_id)
-            if not chat or chat.user_id != u.id: abort(404)
+            if not chat or chat.user_id != g.user.id: abort(404)
             cj = clean.get("content_json")
             if isinstance(cj, str):
                 try: clean["content_json"] = json.loads(cj)
@@ -667,12 +774,12 @@ def table_insert(table):
     db.session.commit()
     if Model is Message:
         for m in inserted:
-            chat = db.session.get(Chat, m.chat_id)
-            if chat:
-                c = m.content_json; txt = (c.get("text") if isinstance(c, dict) else (c or "")) if c is not None else ""
-                chat.last_message = txt
-                chat.messages_count = (chat.messages_count or 0) + 1
-                chat.updated_at = datetime.utcnow()
+          chat = db.session.get(Chat, m.chat_id)
+          if chat:
+            c = m.content_json; txt = (c.get("text") if isinstance(c, dict) else (c or "")) if c is not None else ""
+            chat.last_message = txt
+            chat.messages_count = (chat.messages_count or 0) + 1
+            chat.updated_at = datetime.utcnow()
         db.session.commit()
         for m in inserted:
             socketio.emit("db_change", {"eventType":"INSERT","schema":"public","table":"messages","new":ser(m),"old":None})
@@ -680,7 +787,7 @@ def table_insert(table):
 
 @app.patch("/db/<table>")
 def table_update(table):
-    u = current_user_required()
+    current_user_required()
     Model = TABLES.get(table)
     if not Model: return jsonify({"error":"unknown_table"}), 400
     body = request.get_json() or {}
@@ -695,6 +802,8 @@ def table_update(table):
     values.pop("user_id", None)
     if "content" in values and "content_json" in cols: values["content_json"] = values.pop("content")
     if "metadata" in values and "metadata_json" in cols: values["metadata_json"] = values.pop("metadata")
+    if "data" in values and "data_json" in cols: values["data_json"] = values.pop("data")
+    if "filename" in values and "filename" not in cols and "file_name" in cols: values["file_name"] = values.pop("filename")
     for r in rows:
         for k, v in values.items():
             if k in cols: setattr(r, k, v)
@@ -706,7 +815,7 @@ def table_update(table):
 
 @app.delete("/db/<table>")
 def table_delete(table):
-    u = current_user_required()
+    current_user_required()
     Model = TABLES.get(table)
     if not Model: return jsonify({"error":"unknown_table"}), 400
     args = request.args.to_dict()

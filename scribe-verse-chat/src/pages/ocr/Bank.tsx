@@ -1,6 +1,5 @@
-// src/pages/OCRBank.tsx
 import { Helmet } from "react-helmet-async";
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -8,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import service from "@/services/backend";
 
 type CreditsPayload = {
   plan: string;
@@ -36,12 +36,18 @@ export default function OCRBank() {
   const [elapsed, setElapsed] = useState<string>("–");
   const [credits, setCredits] = useState<CreditsPayload | null>(null);
 
+  const [ocrId, setOcrId] = useState<string | null>(null);
+
   const onFile = (f: File | null) => {
     setFile(f);
+    if (preview) URL.revokeObjectURL(preview);
     setPreview(f ? URL.createObjectURL(f) : null);
     setFields({});
     setRaw(null);
+    setOcrId(null);
   };
+
+  useEffect(() => () => { if (preview) URL.revokeObjectURL(preview); }, []);
 
   const fetchCredits = async () => {
     try {
@@ -54,7 +60,23 @@ export default function OCRBank() {
       if (data?.data?.credits) setCredits(data.data.credits);
     } catch {}
   };
-  React.useEffect(() => { fetchCredits(); }, []);
+  useEffect(() => { fetchCredits(); }, []);
+
+  // Listen for "open from history"
+  useEffect(() => {
+    async function onOpen(e: any) {
+      const { type, id } = e.detail || {};
+      if (type !== "bank") return;
+      const row = await service.getOcr("bank", String(id));
+      if (!row) return;
+      setOcrId(String(row.id));
+      setFields(row.data || {});
+      setRaw({ from: "history", id: row.id, data: row.data });
+      if (row.file_url) setPreview(row.file_url);
+    }
+    window.addEventListener("ocr:open", onOpen as any);
+    return () => window.removeEventListener("ocr:open", onOpen as any);
+  }, []);
 
   const analyze = async () => {
     if (!file) return;
@@ -74,6 +96,15 @@ export default function OCRBank() {
       setFields(fx);
       setRaw(data);
       if (data?.credits) setCredits(data.credits);
+
+      const created = await service.createOcr("bank", {
+        filename: file.name ?? null,
+        file_url: null,
+        data: fx,
+        approved: false,
+      });
+      setOcrId(created.id);
+      window.dispatchEvent(new Event("ocr:refresh"));
     } catch (e) {
       console.error(e);
     } finally {
@@ -81,6 +112,36 @@ export default function OCRBank() {
       setElapsed(`${Math.round(t1 - t0) / 1000}s`);
       setProcessing(false);
     }
+  };
+
+  const approve = async () => {
+    if (!ocrId) return;
+    try {
+      await service.updateOcr("bank", ocrId, { approved: true });
+      window.dispatchEvent(new Event("ocr:refresh"));
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const saveData = async () => {
+    if (!ocrId) return;
+    try {
+      await service.updateOcr("bank", ocrId, { data: fields });
+      window.dispatchEvent(new Event("ocr:refresh"));
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const exportJson = () => {
+    const blob = new Blob([JSON.stringify({ fields, raw }, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `bank_ocr_${ocrId ?? "draft"}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   const rows: Array<any> = Array.isArray(fields?.table) ? fields.table : [];
@@ -95,7 +156,7 @@ export default function OCRBank() {
       <header className="flex items-center gap-3 mb-4">
         <h1 className="text-2xl font-bold">{title}</h1>
 
-        {/* ▼ Mode switcher just like Vision pages */}
+        {/* Mode switcher */}
         <Select
           value="bank"
           onValueChange={(v) => navigate(v === "bill" ? "/ocr/bill" : "/ocr/bank")}
@@ -111,7 +172,7 @@ export default function OCRBank() {
 
         <div className="ml-auto flex items-center gap-2">
           <Badge variant="secondary">
-            Bank: {credits?.ocr_bank?.used ?? 0} / {credits?.ocr_bank?.limit ?? 0}
+            Credits: {credits?.ocr_bank?.remaining ?? 0} / {credits?.ocr_bank?.limit ?? 0}
           </Badge>
         </div>
       </header>
@@ -213,9 +274,9 @@ export default function OCRBank() {
                 <div className="text-xs text-muted-foreground">Processing time: {elapsed}</div>
 
                 <div className="flex gap-2">
-                  <Button>Approve File</Button>
-                  <Button variant="secondary">Save Data</Button>
-                  <Button variant="outline">Export</Button>
+                  <Button onClick={approve} disabled={!ocrId || processing}>Approve File</Button>
+                  <Button variant="secondary" onClick={saveData} disabled={!ocrId || processing}>Save Data</Button>
+                  <Button variant="outline" onClick={exportJson} disabled={!fields || processing}>Export</Button>
                 </div>
               </TabsContent>
 

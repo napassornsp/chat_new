@@ -1,6 +1,5 @@
-// src/pages/OCRBill.tsx
 import { Helmet } from "react-helmet-async";
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -9,6 +8,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import service from "@/services/backend";
 
 type CreditsPayload = {
   plan: string;
@@ -76,15 +76,20 @@ export default function OCRBill() {
   const [fields, setFields] = useState<Record<string, any>>({});
   const [raw, setRaw] = useState<any>(null);
   const [elapsed, setElapsed] = useState<string>("–");
-
   const [credits, setCredits] = useState<CreditsPayload | null>(null);
+
+  const [ocrId, setOcrId] = useState<string | null>(null);
 
   const onFile = (f: File | null) => {
     setFile(f);
+    if (preview) URL.revokeObjectURL(preview);
     setPreview(f ? URL.createObjectURL(f) : null);
     setFields({});
     setRaw(null);
+    setOcrId(null);
   };
+
+  useEffect(() => () => { if (preview) URL.revokeObjectURL(preview); }, []); // cleanup
 
   const fetchCredits = async () => {
     try {
@@ -97,8 +102,23 @@ export default function OCRBill() {
       if (data?.data?.credits) setCredits(data.data.credits);
     } catch {}
   };
+  useEffect(() => { fetchCredits(); }, []);
 
-  React.useEffect(() => { fetchCredits(); }, []);
+  // Listen for "open from history"
+  useEffect(() => {
+    async function onOpen(e: any) {
+      const { type, id } = e.detail || {};
+      if (type !== "bill") return;
+      const row = await service.getOcr("bill", String(id));
+      if (!row) return;
+      setOcrId(String(row.id));
+      setFields(row.data || {});
+      setRaw({ from: "history", id: row.id, data: row.data });
+      if (row.file_url) setPreview(row.file_url);
+    }
+    window.addEventListener("ocr:open", onOpen as any);
+    return () => window.removeEventListener("ocr:open", onOpen as any);
+  }, []);
 
   const analyze = async () => {
     if (!file) return;
@@ -118,6 +138,15 @@ export default function OCRBill() {
       setFields(fx);
       setRaw(data);
       if (data?.credits) setCredits(data.credits);
+
+      const created = await service.createOcr("bill", {
+        filename: file.name ?? null,
+        file_url: null,
+        data: fx,
+        approved: false,
+      });
+      setOcrId(created.id);
+      window.dispatchEvent(new Event("ocr:refresh")); // refresh sidebar list
     } catch (e) {
       console.error(e);
     } finally {
@@ -125,6 +154,44 @@ export default function OCRBill() {
       setElapsed(`${Math.round(t1 - t0) / 1000}s`);
       setProcessing(false);
     }
+  };
+
+  const approve = async () => {
+    if (!ocrId) return;
+    try {
+      await service.updateOcr("bill", ocrId, { approved: true });
+      window.dispatchEvent(new Event("ocr:refresh"));
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const normalizeFieldsForSave = (obj: Record<string, any>) => {
+    const out = { ...obj };
+    if (typeof out.table === "string") {
+      try { out.table = JSON.parse(out.table); } catch {}
+    }
+    return out;
+  };
+
+  const saveData = async () => {
+    if (!ocrId) return;
+    try {
+      await service.updateOcr("bill", ocrId, { data: normalizeFieldsForSave(fields) });
+      window.dispatchEvent(new Event("ocr:refresh"));
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const exportJson = () => {
+    const blob = new Blob([JSON.stringify({ fields, raw }, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `bill_ocr_${ocrId ?? "draft"}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   return (
@@ -137,7 +204,7 @@ export default function OCRBill() {
       <header className="flex items-center gap-3 mb-4">
         <h1 className="text-2xl font-bold">{title}</h1>
 
-        {/* ▼ Mode switcher just like Vision pages */}
+        {/* Mode switcher */}
         <Select
           value="bill"
           onValueChange={(v) => navigate(v === "bank" ? "/ocr/bank" : "/ocr/bill")}
@@ -153,7 +220,7 @@ export default function OCRBill() {
 
         <div className="ml-auto flex items-center gap-2">
           <Badge variant="secondary">
-            Bill: {credits?.ocr_bill?.used ?? 0} / {credits?.ocr_bill?.limit ?? 0}
+            Credits: {credits?.ocr_bill?.remaining ?? 0} / {credits?.ocr_bill?.limit ?? 0}
           </Badge>
         </div>
       </header>
@@ -217,9 +284,9 @@ export default function OCRBill() {
                 <div className="text-xs text-muted-foreground">Processing time: {elapsed}</div>
 
                 <div className="flex gap-2">
-                  <Button>Approve File</Button>
-                  <Button variant="secondary">Save Data</Button>
-                  <Button variant="outline">Export</Button>
+                  <Button onClick={approve} disabled={!ocrId || processing}>Approve File</Button>
+                  <Button variant="secondary" onClick={saveData} disabled={!ocrId || processing}>Save Data</Button>
+                  <Button variant="outline" onClick={exportJson} disabled={!fields || processing}>Export</Button>
                 </div>
               </TabsContent>
 

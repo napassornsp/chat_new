@@ -1,7 +1,5 @@
 // src/services/backend.ts
 import type { Chat, Message, Credits, BotVersion } from "./types";
-import { supabase } from "@/integrations/supabase/client";
-import type { Tables } from "@/integrations/supabase/types";
 
 /* ---------------------------------- helpers --------------------------------- */
 
@@ -35,37 +33,94 @@ async function api<T = any>(
   return data as T;
 }
 
-/** Normalize various backend shapes into { remaining: number } */
+/** Normalize various backend shapes into { remaining: number } (chat credits only) */
 function toCreditsRow(row: any): Credits {
-  // New monthly payload: { plan, chat: { remaining }, ocr_bill: {...}, ocr_bank: {...}, ... }
   if (row && typeof row === "object") {
-    if (typeof row.remaining === "number") return { remaining: row.remaining }; // legacy simple
-    if (typeof row.remaining_simple === "number") return { remaining: row.remaining_simple }; // helper we added
+    if (typeof row.remaining === "number") return { remaining: row.remaining };
+    if (typeof row.remaining_simple === "number") return { remaining: row.remaining_simple };
     if (row.chat && typeof row.chat.remaining === "number") {
       return { remaining: Number(row.chat.remaining) };
     }
-    if (row.credits && typeof row.credits === "object") {
-      // some server responses nest things
-      return toCreditsRow(row.credits);
-    }
-    if (row.data && typeof row.data === "object") {
-      return toCreditsRow(row.data);
-    }
+    if (row.credits && typeof row.credits === "object") return toCreditsRow(row.credits);
+    if (row.data && typeof row.data === "object") return toCreditsRow(row.data);
   }
   const n = Number(row);
   return { remaining: Number.isFinite(n) ? n : 0 };
 }
 
+/* --------------------------- Full credits (structured) ----------------------- */
+
+export type CreditBucket = {
+  limit: number;
+  used: number;
+  remaining: number;
+  percent_used: number;
+};
+
+export type CreditsFull = {
+  plan: string;
+  last_reset_at: string | null;
+  chat: CreditBucket;
+  ocr_bill: CreditBucket;
+  ocr_bank: CreditBucket;
+};
+
+function toCreditsFull(payload: any): CreditsFull {
+  const safeBucket = (b: any): CreditBucket => ({
+    limit: Number(b?.limit ?? 0),
+    used: Number(b?.used ?? 0),
+    remaining: Number(b?.remaining ?? 0),
+    percent_used: Number(b?.percent_used ?? 0),
+  });
+  const p = payload?.data?.credits ?? payload?.credits ?? payload ?? {};
+  return {
+    plan: String(p?.plan ?? "free"),
+    last_reset_at: p?.last_reset_at ?? null,
+    chat: safeBucket(p?.chat),
+    ocr_bill: safeBucket(p?.ocr_bill),
+    ocr_bank: safeBucket(p?.ocr_bank),
+  };
+}
+
+/* ------------------------------ OCR data types ------------------------------- */
+
+type OcrType = "bill" | "bank";
+
+export type OcrRow = {
+  id: string;
+  type: OcrType;           // attached by client
+  filename: string | null;
+  file_url: string | null;
+  data: any;               // parsed OCR JSON
+  approved?: boolean;
+  created_at: string;
+};
+
+function tableOf(t: OcrType) {
+  return t === "bill" ? "ocr_bill_extractions" : "ocr_bank_extractions";
+}
+
 /* ------------------------------------ API ----------------------------------- */
 
 export default {
+  /* ------------------------------- Credits / Chat ------------------------------ */
+
+  /** Legacy/simple: returns { remaining } for CHAT credits (kept for compatibility) */
   async getCredits(): Promise<Credits> {
-    // Flask RPC returns: { data: { credits: payload } }
     const r = await api<{ data?: { credits?: any } }>("/rpc/get_credits", {
       method: "POST",
       body: JSON.stringify({}),
     });
     return toCreditsRow(r?.data?.credits ?? 0);
+  },
+
+  /** New: returns full structured credits (plan, chat, ocr_bill, ocr_bank) */
+  async getCreditsFull(): Promise<CreditsFull> {
+    const r = await api<{ data?: { credits?: any } }>("/rpc/get_credits", {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    return toCreditsFull(r);
   },
 
   async listChats(limit = 1000, offset = 0): Promise<Chat[]> {
@@ -106,7 +161,6 @@ export default {
     });
   },
 
-  // Allow passing AbortSignal (used by Index.tsx)
   async listMessages(
     chatId: string,
     limit = 200,
@@ -137,7 +191,7 @@ export default {
       }),
     });
 
-    // New backend returns 200 with { errorCode: "INSUFFICIENT_CREDITS", data: { credits: payload } }
+    // Backend returns 200 even for insufficient credits
     if (r?.errorCode === "INSUFFICIENT_CREDITS") {
       return { errorCode: "INSUFFICIENT_CREDITS", credits: toCreditsRow(r?.data?.credits) };
     }
@@ -199,9 +253,63 @@ export default {
   async signOut() {
     try {
       await api("/auth/logout", { method: "POST", body: JSON.stringify({}) });
-    } catch {
-      // ignore
-    }
+    } catch {}
     localStorage.removeItem("offline_token");
+  },
+
+  /* ---------------------------------- OCR ---------------------------------- */
+
+  async listOcr(t: OcrType, limit = 50, offset = 0): Promise<OcrRow[]> {
+    const r = await api<{ rows: any[] }>(`/db/${tableOf(t)}`, {
+      method: "GET",
+      query: {
+        _order_col: "created_at",
+        _order_asc: 0,
+        _offset: offset,
+        _limit: limit,
+      },
+    });
+    return (r.rows || []).map((row) => ({ ...row, type: t })) as OcrRow[];
+  },
+
+  async getOcr(t: OcrType, id: string): Promise<OcrRow | null> {
+    const r = await api<{ rows: any[] }>(`/db/${tableOf(t)}`, {
+      method: "GET",
+      query: { id },
+    });
+    const row = (r.rows || [])[0];
+    return row ? ({ ...row, type: t } as OcrRow) : null;
+  },
+
+  async createOcr(
+    t: OcrType,
+    values: Partial<Pick<OcrRow, "filename" | "file_url" | "data" | "approved">> & {
+      created_at?: string;
+    }
+  ): Promise<OcrRow> {
+    const r = await api<{ rows: any[] }>(`/db/${tableOf(t)}`, {
+      method: "POST",
+      body: JSON.stringify({ values }),
+    });
+    const row = (r.rows || [])[0];
+    return { ...row, type: t } as OcrRow;
+  },
+
+  async updateOcr(
+    t: OcrType,
+    id: string,
+    patch: Partial<Pick<OcrRow, "filename" | "file_url" | "data" | "approved">>
+  ): Promise<void> {
+    await api(`/db/${tableOf(t)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ filters: { id }, values: patch }),
+    });
+  },
+
+  async deleteOcr(t: OcrType, id: string): Promise<void> {
+    await api(`/db/${tableOf(t)}`, {
+      method: "DELETE",
+      query: { id },
+    });
   },
 };
