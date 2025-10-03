@@ -1,6 +1,7 @@
+# backend/server/app.py
 import os, secrets, json
 from datetime import datetime
-from flask import Flask, request, jsonify, make_response
+from flask import Flask, request, jsonify, make_response, g, abort
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
 from flask_socketio import SocketIO, emit
@@ -39,6 +40,13 @@ class User(db.Model):
     password_hash = db.Column(String, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
+    def to_dict(self, include_profile=False):
+        d = {"id": self.id, "email": self.email, "name": self.name}
+        if include_profile:
+            prof = db.session.get(Profile, self.id)
+            d["profile"] = prof.to_dict() if prof else None
+        return d
+
 
 class Profile(db.Model):
     __tablename__ = "profiles"
@@ -46,6 +54,9 @@ class Profile(db.Model):
     full_name = db.Column(String, nullable=True)
     avatar_url = db.Column(String, nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    def to_dict(self):
+        return {"id": self.id, "full_name": self.full_name, "avatar_url": self.avatar_url, "created_at": self.created_at.isoformat()}
 
 
 class UserCredit(db.Model):
@@ -96,6 +107,16 @@ class OCRBankExtract(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 
+class Notification(db.Model):
+    __tablename__ = "notifications"
+    id = db.Column(Integer, primary_key=True)
+    user_id = db.Column(Integer, db.ForeignKey("users.id"), nullable=False)
+    title = db.Column(String, nullable=False)
+    body = db.Column(Text, nullable=True)
+    read_at = db.Column(db.DateTime, nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+
 class Session(db.Model):
     __tablename__ = "sessions"
     token = db.Column(String, primary_key=True)
@@ -104,6 +125,28 @@ class Session(db.Model):
 
 
 # ------------------ Helpers ------------------
+def current_user():
+    """Return User instance from Bearer token; no abort."""
+    token = request.headers.get("Authorization", "").replace("Bearer ", "")
+    if not token:
+        return None
+    sess = Session.query.filter_by(token=token).first()
+    return db.session.get(User, sess.user_id) if sess else None
+
+
+@app.before_request
+def attach_user():
+    # make user available as g.user for every request
+    g.user = current_user()
+
+
+def current_user_required():
+    u = getattr(g, "user", None)
+    if not u:
+        abort(401)
+    return u
+
+
 def ser(o):
     """Serialize SQLAlchemy model to plain dict; lift content_json.role to top-level 'role'."""
     d = {c.name: getattr(o, c.name) for c in o.__table__.columns}
@@ -118,7 +161,6 @@ def ser(o):
             except Exception:
                 cj = {"text": str(cj)}
         d["content"] = cj
-        # Provide role at top level to make UI bubble placement consistent
         if isinstance(cj, dict) and "role" in cj and "role" not in d:
             d["role"] = cj["role"]
     if "metadata_json" in d:
@@ -131,6 +173,7 @@ def model_columns(Model):
 
 
 def sanitize_row(Model, row: dict):
+    """Map external keys to DB columns and drop everything else."""
     row = dict(row or {})
     cols = model_columns(Model)
     if "content" in row and "content_json" in cols and "content_json" not in row:
@@ -138,14 +181,6 @@ def sanitize_row(Model, row: dict):
     if "metadata" in row and "metadata_json" in cols and "metadata_json" not in row:
         row["metadata_json"] = row.pop("metadata")
     return {k: v for k, v in row.items() if k in cols}
-
-
-def current_user():
-    token = request.headers.get("Authorization", "").replace("Bearer ", "")
-    if not token:
-        return None
-    sess = Session.query.filter_by(token=token).first()
-    return db.session.get(User, sess.user_id) if sess else None
 
 
 @app.after_request
@@ -212,6 +247,7 @@ def seed():
     _ensure_user("v2@example.com", "V2 User", password="admin123", credits=100)
     _ensure_user("v3@example.com", "V3 User", password="admin123", credits=100)
 
+
 # ------------------ Health ------------------
 @app.get("/health")
 def health():
@@ -259,8 +295,8 @@ def login():
 
 @app.get("/auth/me")
 def me():
-    u = current_user()
-    return jsonify({"user": None if not u else {"id": u.id, "email": u.email, "name": u.name}})
+    u = g.user
+    return jsonify({"user": None if not u else u.to_dict(include_profile=True)})
 
 
 @app.post("/auth/logout")
@@ -269,6 +305,28 @@ def logout():
     Session.query.filter_by(token=tok).delete()
     db.session.commit()
     return jsonify({"ok": True})
+
+
+# ------------------ Profile ------------------
+@app.get("/me")
+def get_me():
+    u = current_user_required()
+    return jsonify(u.to_dict(include_profile=True))
+
+
+@app.put("/me")
+def update_me():
+    u = current_user_required()
+    data = request.get_json() or {}
+    u.name = data.get("name", u.name)
+    prof = db.session.get(Profile, u.id)
+    if not prof:
+        prof = Profile(id=u.id)
+        db.session.add(prof)
+    prof.full_name = data.get("full_name", prof.full_name)
+    prof.avatar_url = data.get("avatar_url", prof.avatar_url)
+    db.session.commit()
+    return jsonify(u.to_dict(include_profile=True))
 
 
 # ------------------ RPC: credits ------------------
@@ -283,17 +341,13 @@ def _credits_payload(user_id: int):
 
 @app.post("/rpc/get_credits")
 def rpc_get_credits():
-    u = current_user()
-    if not u:
-        return jsonify({"error": "unauthorized"}), 401
+    u = current_user_required()
     return jsonify({"data": {"credits": _credits_payload(u.id)}})
 
 
 @app.post("/rpc/reset_monthly_credits")
 def rpc_reset_monthly_credits():
-    u = current_user()
-    if not u:
-        return jsonify({"error": "unauthorized"}), 401
+    u = current_user_required()
     row = db.session.get(UserCredit, u.id)
     if not row:
         row = UserCredit(id=u.id, credits=1000)
@@ -307,6 +361,10 @@ def rpc_reset_monthly_credits():
 
 # ------------------ Functions (chat + router) ------------------
 def _ensure_user_message_inserted(u, chat_id: int, text: str, version: str = "V2"):
+    # enforce chat ownership
+    c = db.session.get(Chat, int(chat_id))
+    if not c or c.user_id != u.id:
+        abort(404)
     m = Message(
         chat_id=int(chat_id),
         user_id=u.id,
@@ -323,11 +381,9 @@ def _ensure_user_message_inserted(u, chat_id: int, text: str, version: str = "V2
 
 @app.post("/functions/v1/<name>")
 def functions_invoke(name):
-    u = current_user()
-    if not u:
-        return jsonify({"error": "unauthorized"}), 401
-
+    u = current_user_required()
     body = request.get_json(silent=True) or {}
+
     if name in ("chat", "chat-router"):
         chat_id = body.get("chat_id")
         version = (body.get("version") or "V2").upper()
@@ -340,7 +396,6 @@ def functions_invoke(name):
             db.session.commit()
 
         if (credits_row.credits or 0) <= 0:
-            # block and let UI show a notice box
             return jsonify(
                 {
                     "errorCode": "INSUFFICIENT_CREDITS",
@@ -349,18 +404,23 @@ def functions_invoke(name):
                 }
             )
 
-        # last user text (optional – UI may also insert the user msg)
         last_text = body.get("text") or body.get("user_text") or ""
+
         if not chat_id:
             chat = Chat(user_id=u.id, title="New Chat")
             db.session.add(chat)
             db.session.commit()
             chat_id = chat.id
+        else:
+            # ownership check for provided chat
+            chat = db.session.get(Chat, int(chat_id))
+            if not chat or chat.user_id != u.id:
+                abort(404)
 
         if last_text:
             _ensure_user_message_inserted(u, int(chat_id), last_text, version)
 
-        # --- version-specific temporary reply ---
+        # version-specific temporary reply
         label = "V1" if version == "V1" else "V3" if version == "V3" else "V2"
         reply = f"Temporary reply message from {label}"
 
@@ -372,11 +432,9 @@ def functions_invoke(name):
         )
         db.session.add(m)
 
-        chat = db.session.get(Chat, int(chat_id))
-        if chat:
-            chat.last_message = reply
-            chat.messages_count = (chat.messages_count or 0) + 1
-            chat.updated_at = datetime.utcnow()
+        chat.last_message = reply
+        chat.messages_count = (chat.messages_count or 0) + 1
+        chat.updated_at = datetime.utcnow()
 
         # Decrement 1 credit
         credits_row.credits = max(0, (credits_row.credits or 0) - 1)
@@ -393,9 +451,7 @@ def functions_invoke(name):
                 "data": {
                     "choices": [{"message": {"role": "assistant", "content": reply}}],
                     "chat_id": chat_id,
-                    # send numeric credits for convenience (frontend can coerce)
                     "credits": int(credits_row.credits or 0),
-                    # also return the full assistant row for immediate render
                     "assistant": ser(m),
                 }
             }
@@ -404,7 +460,24 @@ def functions_invoke(name):
     return jsonify({"data": {"ok": True}})
 
 
-# ------------------ DB endpoints ------------------
+# ------------------ Notifications ------------------
+@app.get("/db/notifications")
+def list_notifications():
+    u = current_user_required()
+    rows = Notification.query.filter_by(user_id=u.id).order_by(Notification.created_at.desc()).all()
+    return jsonify([ser(r) for r in rows])
+
+
+@app.post("/db/notifications")
+def create_notification():
+    u = current_user_required()
+    data = request.get_json() or {}
+    n = Notification(user_id=u.id, title=data.get("title", ""), body=data.get("body", ""))
+    db.session.add(n); db.session.commit()
+    return jsonify(ser(n)), 201
+
+
+# ------------------ Generic DB endpoints with user scoping ------------------
 TABLES = {
     "users": User,
     "profiles": Profile,
@@ -413,7 +486,18 @@ TABLES = {
     "messages": Message,
     "ocr_bill_extractions": OCRBillExtract,
     "ocr_bank_extractions": OCRBankExtract,
+    "notifications": Notification,
 }
+
+def _has_user_id(Model):
+    return "user_id" in model_columns(Model)
+
+def _scope_query_to_user(Model, q):
+    """If the model has user_id, restrict to current user's rows."""
+    if _has_user_id(Model):
+        u = current_user_required()
+        q = q.filter(getattr(Model, "user_id") == u.id)
+    return q
 
 
 @app.get("/db/<table>")
@@ -432,7 +516,8 @@ def table_select(table):
     order_col = args.pop("_order_col", None)
     order_asc = args.pop("_order_asc", "1") == "1"
 
-    q = Model.query
+    q = _scope_query_to_user(Model, Model.query)
+    # Allow additional equals filters, still under user scope
     for k, v in args.items():
         if hasattr(Model, k):
             q = q.filter(getattr(Model, k) == v)
@@ -452,9 +537,7 @@ def table_select(table):
 
 @app.post("/db/<table>")
 def table_insert(table):
-    u = current_user()
-    if not u:
-        return jsonify({"error": "unauthorized"}), 401
+    u = current_user_required()
     Model = TABLES.get(table)
     if not Model:
         return jsonify({"error": "unknown_table"}), 400
@@ -469,18 +552,33 @@ def table_insert(table):
     inserted = []
     for row in values:
         clean = sanitize_row(Model, row)
-        if Model is Message and isinstance(clean.get("content_json"), str):
-            try:
-                clean["content_json"] = json.loads(clean["content_json"])
-            except Exception:
-                clean["content_json"] = {"text": str(clean["content_json"])}
+
+        # Always stamp/override user_id if the model has it
+        if _has_user_id(Model):
+            clean["user_id"] = u.id
+
+        # Extra guard: messages must belong to a chat owned by user
+        if Model is Message:
+            chat_id = int(clean.get("chat_id") or 0)
+            chat = db.session.get(Chat, chat_id)
+            if not chat or chat.user_id != u.id:
+                abort(404)
+            # Normalize content_json
+            cj = clean.get("content_json")
+            if isinstance(cj, str):
+                try:
+                    clean["content_json"] = json.loads(cj)
+                except Exception:
+                    clean["content_json"] = {"text": str(cj)}
+
         m = Model(**clean)
         db.session.add(m)
         inserted.append(m)
 
     db.session.commit()
 
-    if table == "messages":
+    # Maintain chat counters + realtime when inserting messages
+    if Model is Message:
         for m in inserted:
             chat = db.session.get(Chat, m.chat_id)
             if chat:
@@ -493,23 +591,15 @@ def table_insert(table):
         for m in inserted:
             socketio.emit(
                 "db_change",
-                {
-                    "eventType": "INSERT",
-                    "schema": "public",
-                    "table": "messages",
-                    "new": ser(m),
-                    "old": None,
-                },
+                {"eventType": "INSERT", "schema": "public", "table": "messages", "new": ser(m), "old": None},
             )
 
-    return jsonify({"rows": [ser(x) for x in inserted]})
+    return jsonify({"rows": [ser(x) for x in inserted]}), 201
 
 
 @app.patch("/db/<table>")
 def table_update(table):
-    u = current_user()
-    if not u:
-        return jsonify({"error": "unauthorized"}), 401
+    u = current_user_required()
     Model = TABLES.get(table)
     if not Model:
         return jsonify({"error": "unknown_table"}), 400
@@ -518,14 +608,18 @@ def table_update(table):
     values = body.get("values") or {}
     filters = body.get("filters") or {}
 
-    q = Model.query
+    q = _scope_query_to_user(Model, Model.query)
     for k, v in filters.items():
         if hasattr(Model, k):
             q = q.filter(getattr(Model, k) == v)
 
     rows = q.all()
-    olds = [ser(r) for r in rows]  # capture before updates
+    olds = [ser(r) for r in rows]
     cols = model_columns(Model)
+
+    # Never allow user_id to be changed from client
+    values.pop("user_id", None)
+
     if "content" in values and "content_json" in cols:
         values["content_json"] = values.pop("content")
     if "metadata" in values and "metadata_json" in cols:
@@ -540,7 +634,6 @@ def table_update(table):
 
     db.session.commit()
 
-    # Realtime notify UPDATE (fixes rename without refresh)
     for old, r in zip(olds, rows):
         socketio.emit(
             "db_change",
@@ -552,15 +645,13 @@ def table_update(table):
 
 @app.delete("/db/<table>")
 def table_delete(table):
-    u = current_user()
-    if not u:
-        return jsonify({"error": "unauthorized"}), 401
+    u = current_user_required()
     Model = TABLES.get(table)
     if not Model:
         return jsonify({"error": "unknown_table"}), 400
 
     args = request.args.to_dict()
-    q = Model.query
+    q = _scope_query_to_user(Model, Model.query)
     for k, v in args.items():
         if hasattr(Model, k):
             q = q.filter(getattr(Model, k) == v)
