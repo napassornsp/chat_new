@@ -8,6 +8,13 @@ from flask_socketio import SocketIO, emit
 from werkzeug.security import generate_password_hash, check_password_hash
 from sqlalchemy import Integer, String, Text, text
 from sqlalchemy.dialects.sqlite import JSON as SQLITE_JSON
+from typing import Optional
+
+try:
+    from PIL import Image
+except Exception:  # Pillow not installed
+    Image = None
+
 
 DB_URL = os.environ.get("OFFLINE_DB_URL", "sqlite:///offline.db")
 SECRET = os.environ.get("OFFLINE_SECRET", "dev-secret")
@@ -122,6 +129,97 @@ class Session(db.Model):
     token = db.Column(String, primary_key=True)
     user_id = db.Column(Integer, db.ForeignKey("users.id"), nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+# ---------- Vision: Flower (YOLO-style dummy) ----------
+# --- YOLO dummy detection -----------------------------------------------------
+@app.post("/vision/yolo/detect")
+def yolo_detect():
+    """
+    Accepts multipart/form-data with 'file'
+    Returns YOLO-like dummy boxes so the frontend can render rectangles.
+
+    Response:
+    {
+      "image": {"width": int, "height": int},
+      "boxes": [
+        {"label": "rose", "conf": 0.95, "xyxy": [x1,y1,x2,y2], "color": "#hex"},
+        ...
+      ]
+    }
+    """
+    f = request.files.get("file")
+    w, h = 640, 480
+
+    # Try to determine image size if Pillow is available
+    try:
+        if f is not None:
+            from PIL import Image
+            im = Image.open(f.stream)
+            w, h = im.size
+    except Exception:
+        pass  # keep defaults
+
+    # Make 3 stable dummy boxes proportional to the image size
+    boxes = [
+        {
+            "label": "Rose",
+            "conf": 0.95,
+            "xyxy": [int(0.05 * w), int(0.15 * h), int(0.45 * w), int(0.70 * h)],
+            "color": "#ef4444",  # red
+        },
+        {
+            "label": "Tulip",
+            "conf": 0.88,
+            "xyxy": [int(0.55 * w), int(0.25 * h), int(0.90 * w), int(0.70 * h)],
+            "color": "#22c55e",  # green
+        },
+        {
+            "label": "Sunflower",
+            "conf": 0.82,
+            "xyxy": [int(0.62 * w), int(0.06 * h), int(0.95 * w), int(0.24 * h)],
+            "color": "#06b6d4",  # cyan
+        },
+    ]
+
+    return jsonify({"image": {"width": w, "height": h}, "boxes": boxes})
+
+
+# ---------- Vision: Food Classification (mock) ----------
+@app.post("/vision/food/classify")
+def vision_food_classify():
+    """
+    Mock classifier: returns a few food classes with confidences.
+    Expects multipart/form-data with a 'file' field.
+    """
+    # Require a logged-in user (remove if you want it public)
+    u = current_user_required()
+
+    # Default image size if we can't read it
+    width, height = 640, 480
+
+    # Try to get real dimensions if Pillow is available
+    try:
+        f = request.files.get("file")
+        if f and Image is not None:
+            img = Image.open(f.stream)
+            width, height = img.size
+        # If Pillow isn't installed or file missing, we simply keep defaults
+    except Exception:
+        pass
+
+    # Mock results (adjust as you like)
+    classes = [
+        {"label": "Italian Cuisine", "confidence": 0.95},
+        {"label": "Pasta", "confidence": 0.88},
+        {"label": "Tomato Sauce", "confidence": 0.82},
+    ]
+
+    # You can randomize or branch on filename here if desired
+    return jsonify({
+        "image": {"width": width, "height": height},
+        "classes": classes,
+    })
+
 
 # ---------- Helpers ----------
 def now_ym():
@@ -261,33 +359,81 @@ def load_or_create_credits(user_id: int, plan_default="free") -> UserCredit:
     return row
 
 # ---------- Seed ----------
-def _ensure_user(email, name, password, plan="free"):
+def _ensure_user(
+    email: str,
+    name: str,
+    password: str = "demo123",
+    plan: str = "free",
+    first_chat_title: str = "General",
+):
+    """
+    Create the user if missing and ensure related rows exist.
+    Initialize UserCredit with a plan + monthly counters (not legacy numeric 'credits').
+    """
     u = User.query.filter_by(email=email).first()
     if not u:
         u = User(email=email, name=name, password_hash=generate_password_hash(password))
-        db.session.add(u); db.session.commit()
-        db.session.add(Profile(id=u.id, full_name=u.name))
-        db.session.add(UserCredit(id=u.id, plan=plan, last_reset_at=now_ym()))
+        db.session.add(u)
         db.session.commit()
+
+    # Profile
+    prof = db.session.get(Profile, u.id)
+    if not prof:
+        db.session.add(Profile(id=u.id, full_name=name))
+
+    # Credits (monthly counters & plan)
+    uc = db.session.get(UserCredit, u.id)
+    if not uc:
+        db.session.add(
+            UserCredit(
+                id=u.id,
+                plan=plan,
+                chat_used=0,
+                ocr_bill_used=0,
+                ocr_bank_used=0,
+                last_reset_at=now_ym(),
+            )
+        )
     else:
-        uc = db.session.get(UserCredit, u.id)
-        if not uc:
-            db.session.add(UserCredit(id=u.id, plan=plan, last_reset_at=now_ym()))
-            db.session.commit()
-        else:
-            if not uc.plan:
-                uc.plan = plan
-            if not uc.last_reset_at:
-                uc.last_reset_at = now_ym()
-            db.session.commit()
+        # Make sure plan & month are sane
+        if uc.plan != plan:
+            uc.plan = plan
+        if uc.last_reset_at != now_ym():
+            uc.chat_used = 0
+            uc.ocr_bill_used = 0
+            uc.ocr_bank_used = 0
+            uc.last_reset_at = now_ym()
+        uc.updated_at = datetime.utcnow()
+
+    # At least one chat
+    if not Chat.query.filter_by(user_id=u.id).first():
+        db.session.add(Chat(user_id=u.id, title=first_chat_title))
+
+    db.session.commit()
     return u
 
 def seed():
     db.create_all()
     auto_migrate()
-    # exactly two users
-    _ensure_user("admin@example.com", "Admin", "admin123", plan="admin")
-    _ensure_user("v1@example.com", "V1 User", "admin123", plan="free")
+
+    # Admin: unlimited-ish via plan 'admin'
+    _ensure_user(
+        "admin@example.com",
+        "Admin",
+        password="admin123",
+        plan="admin",
+        first_chat_title="Welcome",
+    )
+
+    # Regular user: free plan
+    _ensure_user(
+        "user@example.com",
+        "V1 User",
+        password="user123",
+        plan="free",
+        first_chat_title="Welcome",
+    )
+
 
 # ---------- Health ----------
 @app.get("/health")
@@ -356,12 +502,16 @@ def update_me():
     return jsonify(u.to_dict(include_profile=True))
 
 # ---------- Credits ----------
+
 @app.post("/rpc/get_credits")
 def rpc_get_credits():
     u = current_user_required()
     row = load_or_create_credits(u.id)
     db.session.commit()
-    return jsonify({"data": {"credits": credits_payload(row)}})
+    payload = credits_payload(row)
+    # Convenience number for headers/old clients
+    payload["remaining_simple"] = int(payload["chat"]["remaining"])
+    return jsonify({"data": {"credits": payload}})
 
 # ---------- Chat function ----------
 def _ensure_user_message_inserted(u, chat_id: int, text: str, version: str):

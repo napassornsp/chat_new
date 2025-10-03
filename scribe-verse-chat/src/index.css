@@ -145,3 +145,27 @@ html, body { margin: 0; overflow: hidden; overscroll-behavior: none; }
 .btn-primary-grad:hover {
   filter: brightness(1.05);
 }
+
+[data-sidebar="trigger"],
+[data-role="top-collapse"] {
+  display: none !important;
+}
+
+.detection-controls .btn-sm {
+  padding: 4px 8px !important;
+  font-size: 0.75rem !important;
+  line-height: 1rem !important;
+  height: 28px !important;
+}
+
+.detection-controls .btn-sm svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* Adjust spacing between buttons */
+.detection-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}

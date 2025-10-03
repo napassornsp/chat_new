@@ -1,205 +1,148 @@
+// src/pages/OCRBill.tsx
 import { Helmet } from "react-helmet-async";
-import { useEffect, useMemo, useState } from "react";
+import React, { useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { ZoomIn, ZoomOut, RefreshCw, FlipHorizontal } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { supabase } from "@/integrations/supabase/client";
-import { useToast } from "@/hooks/use-toast";
-import { useNavigate } from "react-router-dom";
+
+type CreditsPayload = {
+  plan: string;
+  chat: { used: number; limit: number; remaining: number; percent_used: number };
+  ocr_bill: { used: number; limit: number; remaining: number; percent_used: number };
+  ocr_bank: { used: number; limit: number; remaining: number; percent_used: number };
+};
+
+const API = import.meta.env.VITE_OFFLINE_API || "http://localhost:5001";
+const authHeader = () => {
+  const tok = localStorage.getItem("offline_token") || "";
+  return tok ? { Authorization: `Bearer ${tok}` } : {};
+};
+
+/** [label, key] */
+const FIELD_DEF: Array<[string, string]> = [
+  ["ชื่อผู้ซื้อภาษาไทย (buyer_name_thai)", "buyer_name_thai"],
+  ["ชื่อผู้ซื้อภาษาอังกฤษ (buyer_name_eng)", "buyer_name_eng"],
+  ["สาขาผู้ซื้อ (buyer_branch)", "buyer_branch"],
+  ["ที่อยู่ผู้ซื้อภาษาไทย (buyer_address_thai)", "buyer_address_thai"],
+  ["ที่อยู่ผู้ซื้อภาษาอังกฤษ (buyer_address_eng)", "buyer_address_eng"],
+  ["หมายเลขภาษีผู้ซื้อ (buyer_vat_number)", "buyer_vat_number"],
+  ["ชื่อผู้ขายภาษาไทย (seller_name_thai)", "seller_name_thai"],
+  ["ชื่อผู้ขายภาษาอังกฤษ (seller_name_eng)", "seller_name_eng"],
+  ["สาขาผู้ขาย (seller_branch)", "seller_branch"],
+  ["ที่อยู่ผู้ขายภาษาไทย (seller_address_thai)", "seller_address_thai"],
+  ["ที่อยู่ผู้ขายภาษาอังกฤษ (seller_address_eng)", "seller_address_eng"],
+  ["หมายเลขภาษีผู้ขาย (seller_vat_number)", "seller_vat_number"],
+  ["ประเภทเอกสาร (document_type)", "document_type"],
+  ["หมายเลขใบเอกสาร (doc_number)", "doc_number"],
+  ["วันที่ของเอกสาร (doc_date)", "doc_date"],
+  ["จำนวนเงินส่วนลด (discount_amount)", "discount_amount"],
+  ["ยอดรวมส่วนลด (amount_after_discount)", "amount_after_discount"],
+  ["ยอดรวมก่อนภาษี (sub_total)", "sub_total"],
+  ["เปอร์เซ็นต์ภาษีหัก ณ ที่จ่าย (WHT_%)", "wht_percent"],
+  ["จำนวนเงินภาษีหัก ณ ที่จ่าย (WHT_amount)", "wht_amount"],
+  ["เปอร์เซ็นต์ภาษีมูลค่าเพิ่ม (vat_%)", "vat_percent"],
+  ["จำนวนเงินภาษีมูลค่าเพิ่ม (vat_amount)", "vat_amount"],
+  ["ยอดรวมสุทธิ (total_due_amount)", "total_due_amount"],
+  ["ยอดรวมตัวอักษร (text_amount)", "text_amount"],
+  ["สกุลเงิน (currency)", "currency"],
+  ["อัตราแลกเปลี่ยน (exchange_rate)", "exchange_rate"],
+  ["เบอร์แฟกซ์ผู้ขาย (seller_fax_number)", "seller_fax_number"],
+  ["เบอร์แฟกซ์ผู้ซื้อ (buyer_fax_number)", "buyer_fax_number"],
+  ["เบอร์โทรศัพท์ผู้ขาย (seller_phone)", "seller_phone"],
+  ["เบอร์โทรศัพท์ผู้ซื้อ (buyer_phone)", "buyer_phone"],
+  ["รหัสลูกค้า (client_id)", "client_id"],
+  ["วันครบกำหนดชำระเงิน (payment_due_date)", "payment_due_date"],
+  ["หมายเลขคำสั่งซื้อ (po_number)", "po_number"],
+  ["อีเมลผู้ขาย (seller_email)", "seller_email"],
+  ["เว็บไซต์ผู้ขาย (seller_website)", "seller_website"],
+  ["ที่อยู่จัดส่งสินค้า (shipto_address)", "shipto_address"],
+  ["รหัสสินค้า (product_code)", "product_code"],
+];
 
 export default function OCRBill() {
   const canonical = typeof window !== "undefined" ? window.location.origin + "/ocr/bill" : "";
+  const title = useMemo(() => "OCR Processing - Bill", []);
+  const navigate = useNavigate();
+
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
   const [processing, setProcessing] = useState(false);
-  const [scale, setScale] = useState(1);
-  const [flipped, setFlipped] = useState(false);
 
-  const [analyzed, setAnalyzed] = useState(false);
-  const [extracted, setExtracted] = useState({ bill_no: "", date: "", vendor: "", total: "" });
-  const [notes, setNotes] = useState("");
+  const [fields, setFields] = useState<Record<string, any>>({});
+  const [raw, setRaw] = useState<any>(null);
+  const [elapsed, setElapsed] = useState<string>("–");
 
-  const title = useMemo(() => "OCR Processing - Bill", []);
-  const navigate = useNavigate();
-  const [billCredits, setBillCredits] = useState<number | null>(null);
-  const [bankCredits, setBankCredits] = useState<number | null>(null);
-  const [billMax, setBillMax] = useState<number | null>(null);
-  const [bankMax, setBankMax] = useState<number | null>(null);
-  const [savedId, setSavedId] = useState<string | null>(null);
-  const { toast } = useToast();
+  const [credits, setCredits] = useState<CreditsPayload | null>(null);
 
-  useEffect(() => {
-    const load = async () => {
-      const { data, error } = await supabase.rpc('reset_monthly_ocr_credits');
-      if (!error && Array.isArray(data) && data.length) {
-        setBillCredits((data[0] as any)?.bill ?? null);
-        setBankCredits((data[0] as any)?.bank ?? null);
-      } else if (!error && data && (data as any).bill !== undefined) {
-        setBillCredits((data as any).bill ?? null);
-        setBankCredits((data as any).bank ?? null);
-      } else {
-        const { data: uc } = await supabase.from('user_credits').select('ocr_bill, ocr_bank').single();
-        if (uc) {
-          setBillCredits((uc as any).ocr_bill ?? null);
-          setBankCredits((uc as any).ocr_bank ?? null);
-        }
-      }
-      try {
-        const { data: auth } = await supabase.auth.getUser();
-        const uid = auth?.user?.id;
-        if (uid) {
-          const { data: profile } = await supabase.from('profiles').select('plan_id').eq('id', uid).single();
-          const planId = (profile as any)?.plan_id;
-          if (planId) {
-            const { data: plan } = await supabase.from('plans').select('ocr_bill_limit, ocr_bank_limit').eq('id', planId).single();
-            setBillMax((plan as any)?.ocr_bill_limit ?? null);
-            setBankMax((plan as any)?.ocr_bank_limit ?? null);
-          } else {
-            setBillMax(12);
-            setBankMax(13);
-          }
-        }
-      } catch (e) {
-        console.error('Failed to load plan limits', e);
-      }
-    };
-    load();
-  }, []);
-
-  useEffect(() => {
-    const reset = () => {
-      setFile(null);
-      setPreview(null);
-      setProcessing(false);
-      setScale(1);
-      setFlipped(false);
-      setAnalyzed(false);
-      setExtracted({ bill_no: "", date: "", vendor: "", total: "" });
-      setNotes("");
-    };
-    // @ts-ignore
-    window.addEventListener("ocr:new", reset as any);
-    return () => window.removeEventListener("ocr:new", reset as any);
-  }, []);
   const onFile = (f: File | null) => {
     setFile(f);
     setPreview(f ? URL.createObjectURL(f) : null);
+    setFields({});
+    setRaw(null);
   };
+
+  const fetchCredits = async () => {
+    try {
+      const r = await fetch(`${API}/rpc/get_credits`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeader() },
+        body: JSON.stringify({}),
+      });
+      const data = await r.json();
+      if (data?.data?.credits) setCredits(data.data.credits);
+    } catch {}
+  };
+
+  React.useEffect(() => { fetchCredits(); }, []);
 
   const analyze = async () => {
-    if (billCredits !== null && billCredits <= 0) {
-      toast({ title: 'Not enough credits', description: 'You have no Bill credits left this month.' });
-      return;
-    }
+    if (!file) return;
     setProcessing(true);
-    setTimeout(async () => {
+    setElapsed("…");
+    const t0 = performance.now();
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const r = await fetch(`${API}/vision/ocr/bill`, {
+        method: "POST",
+        headers: { ...authHeader() },
+        body: fd,
+      });
+      const data = await r.json();
+      const fx = data?.data?.fields ?? {};
+      setFields(fx);
+      setRaw(data);
+      if (data?.credits) setCredits(data.credits);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      const t1 = performance.now();
+      setElapsed(`${Math.round(t1 - t0) / 1000}s`);
       setProcessing(false);
-      setAnalyzed(true);
-      try {
-        const { data: userData } = await supabase.auth.getUser();
-        const uid = userData?.user?.id;
-        if (uid && billCredits !== null) {
-          const newVal = Math.max(0, billCredits - 1);
-          const { data: updated, error } = await supabase
-            .from('user_credits')
-            .update({ ocr_bill: newVal })
-            .eq('user_id', uid)
-            .select('ocr_bill')
-            .single();
-          if (!error) setBillCredits(updated?.ocr_bill ?? newVal);
-        }
-      } catch (e) {
-        console.error('Failed to decrement bill credits', e);
-        toast({ title: 'Error', description: 'Could not update credits.' });
-      }
-    }, 1200);
-  };
-  const saveBill = async (): Promise<string | null> => {
-    try {
-      const { data: userData } = await supabase.auth.getUser();
-      const uid = userData?.user?.id;
-      if (!uid) return null;
-
-      let fileUrl: string | null = null;
-      if (file) {
-        const path = `${uid}/${Date.now()}_${file.name}`;
-        const { error: upErr } = await supabase.storage.from('ocr').upload(path, file);
-        if (!upErr) {
-          const { data: pub } = supabase.storage.from('ocr').getPublicUrl(path);
-          fileUrl = pub.publicUrl;
-        }
-      }
-
-      const { data, error } = await supabase
-        .from('ocr_bill_extractions')
-        .insert({
-          user_id: uid,
-          filename: file?.name ?? null,
-          file_url: fileUrl,
-          data: {
-            bill_no: extracted.bill_no,
-            date: extracted.date,
-            vendor: extracted.vendor,
-            total: extracted.total,
-            notes,
-          } as any,
-        })
-        .select('id')
-        .single();
-
-      if (error) throw error;
-      if (data?.id) setSavedId(data.id);
-      toast({ title: 'Saved', description: 'Bill extraction saved to history.' });
-      return data?.id ?? null;
-    } catch (e) {
-      console.error('Failed to save bill extraction', e);
-      toast({ title: 'Save failed', description: 'Could not save bill extraction.' });
-      return null;
     }
   };
 
-  const approveBill = async () => {
-    try {
-      const { data: userData } = await supabase.auth.getUser();
-      const uid = userData?.user?.id;
-      if (!uid) return;
-      let id = savedId;
-      if (!id) {
-        id = await saveBill();
-      }
-      if (!id) return;
-      const { error } = await supabase
-        .from('ocr_bill_extractions')
-        .update({ approved: true })
-        .eq('id', id);
-      if (error) throw error;
-      toast({ title: 'Approved', description: 'Marked as approved.' });
-      window.dispatchEvent(new CustomEvent('ocr:refresh'));
-    } catch (e) {
-      console.error('Failed to approve bill extraction', e);
-      toast({ title: 'Error', description: 'Could not mark as approved.' });
-    }
-  };
-  const zoomIn = () => setScale((s) => Math.min(4, parseFloat((s + 0.25).toFixed(2))));
-  const zoomOut = () => setScale((s) => Math.max(0.5, parseFloat((s - 0.25).toFixed(2))));
-  const resetView = () => { setScale(1); setFlipped(false); };
   return (
     <div className="container py-6">
       <Helmet>
         <title>{`${title} | Company`}</title>
-        <meta name="description" content="Upload a bill and extract structured data with our OCR." />
         <link rel="canonical" href={canonical} />
       </Helmet>
 
       <header className="flex items-center gap-3 mb-4">
         <h1 className="text-2xl font-bold">{title}</h1>
-        <Select value="bill" onValueChange={(v) => navigate(v === 'bank' ? '/ocr/bank' : '/ocr/bill')}>
-          <SelectTrigger className="w-44">
+
+        {/* ▼ Mode switcher just like Vision pages */}
+        <Select
+          value="bill"
+          onValueChange={(v) => navigate(v === "bank" ? "/ocr/bank" : "/ocr/bill")}
+        >
+          <SelectTrigger className="w-48 h-9 text-sm">
             <SelectValue placeholder="Select OCR Mode" />
           </SelectTrigger>
           <SelectContent>
@@ -207,8 +150,11 @@ export default function OCRBill() {
             <SelectItem value="bank">Bank Processing</SelectItem>
           </SelectContent>
         </Select>
+
         <div className="ml-auto flex items-center gap-2">
-          <Badge variant="secondary">Bill: {billCredits ?? "—"} / {billMax ?? "—"}</Badge>
+          <Badge variant="secondary">
+            Bill: {credits?.ocr_bill?.used ?? 0} / {credits?.ocr_bill?.limit ?? 0}
+          </Badge>
         </div>
       </header>
 
@@ -218,34 +164,19 @@ export default function OCRBill() {
             <CardTitle>Upload Document</CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
-            <div className="flex items-center gap-2">
-              <Button variant="outline" size="icon" onClick={zoomOut} aria-label="Zoom out"><ZoomOut className="h-4 w-4" /></Button>
-              <Button variant="outline" size="icon" onClick={zoomIn} aria-label="Zoom in"><ZoomIn className="h-4 w-4" /></Button>
-              <Button variant="outline" size="icon" onClick={() => setFlipped((f) => !f)} aria-label="Reverse image"><FlipHorizontal className="h-4 w-4" /></Button>
-              <Button variant="outline" size="icon" onClick={resetView} aria-label="Reset view"><RefreshCw className="h-4 w-4" /></Button>
-              <span className="text-xs text-muted-foreground ml-2">Zoom: {(scale * 100).toFixed(0)}%</span>
-            </div>
-            <div className="aspect-[4/3] rounded-md border overflow-auto bg-muted/30 flex items-center justify-center">
+            <div className="aspect-[4/3] rounded-md border flex items-center justify-center overflow-hidden bg-muted/30">
               {preview ? (
-                <img
-                  src={preview}
-                  alt="Uploaded bill document preview"
-                  loading="lazy"
-                  style={{ transform: `${flipped ? "scaleX(-1) " : ""}scale(${scale})`, transformOrigin: "center center" }}
-                  className="object-contain"
-                />
+                <img src={preview} alt="Preview" className="h-full w-full object-contain" />
               ) : (
                 <div className="text-sm text-muted-foreground">No document selected</div>
               )}
             </div>
             <div className="flex items-center gap-2">
               <Input type="file" accept="image/*,.pdf" onChange={(e) => onFile(e.target.files?.[0] ?? null)} />
-              {file && (
-                <Button variant="secondary" onClick={() => onFile(null)}>Reset</Button>
-              )}
+              {file && <Button variant="secondary" onClick={() => onFile(null)}>Reset</Button>}
             </div>
-            <Button className="w-full" disabled={!file || processing || (billCredits !== null && billCredits <= 0)} onClick={analyze}>
-              {processing ? "Processing..." : billCredits !== null && billCredits <= 0 ? "Out of credits" : "Analyze"}
+            <Button className="w-full" disabled={!file || processing} onClick={analyze}>
+              {processing ? "Processing..." : "Analyze"}
             </Button>
           </CardContent>
         </Card>
@@ -260,23 +191,42 @@ export default function OCRBill() {
                 <TabsTrigger value="structured">Structured</TabsTrigger>
                 <TabsTrigger value="raw">Raw Data</TabsTrigger>
               </TabsList>
+
               <TabsContent value="structured" className="space-y-3 mt-4">
-                <div className="grid grid-cols-2 gap-3">
-                  <Input placeholder="Bill Number" value={extracted.bill_no} onChange={(e) => setExtracted((s) => ({ ...s, bill_no: e.target.value }))} />
-                  <Input placeholder="Date" value={extracted.date} onChange={(e) => setExtracted((s) => ({ ...s, date: e.target.value }))} />
-                  <Input placeholder="Vendor" value={extracted.vendor} onChange={(e) => setExtracted((s) => ({ ...s, vendor: e.target.value }))} />
-                  <Input placeholder="Total Amount" value={extracted.total} onChange={(e) => setExtracted((s) => ({ ...s, total: e.target.value }))} />
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {FIELD_DEF.map(([label, key]) => (
+                    <Input
+                      key={key}
+                      placeholder={label}
+                      value={fields?.[key] ?? ""}
+                      onChange={(e) => setFields((f) => ({ ...f, [key]: e.target.value }))}
+                    />
+                  ))}
                 </div>
-                <Textarea placeholder="Address or Notes" value={notes} onChange={(e) => setNotes(e.target.value)} />
-                <div className="text-xs text-muted-foreground">Processing time: {processing ? "…" : "1.2s"}</div>
+
+                <Textarea
+                  placeholder="ตาราง (Table)"
+                  value={
+                    typeof fields?.table === "string"
+                      ? fields.table
+                      : JSON.stringify(fields?.table ?? "", null, 2)
+                  }
+                  onChange={(e) => setFields((f) => ({ ...f, table: e.target.value }))}
+                />
+
+                <div className="text-xs text-muted-foreground">Processing time: {elapsed}</div>
+
                 <div className="flex gap-2">
-                  <Button onClick={approveBill}>Approve File</Button>
-                  <Button variant="secondary" onClick={saveBill}>Save Data</Button>
+                  <Button>Approve File</Button>
+                  <Button variant="secondary">Save Data</Button>
                   <Button variant="outline">Export</Button>
                 </div>
               </TabsContent>
+
               <TabsContent value="raw" className="mt-4">
-                <pre className="text-xs whitespace-pre-wrap text-muted-foreground">{JSON.stringify({ confidence: "91%", fields: ["bill_no", "date", "vendor", "total"] }, null, 2)}</pre>
+                <pre className="text-xs whitespace-pre-wrap text-muted-foreground">
+                  {JSON.stringify(raw ?? {}, null, 2)}
+                </pre>
               </TabsContent>
             </Tabs>
           </CardContent>

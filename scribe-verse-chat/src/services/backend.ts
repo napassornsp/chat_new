@@ -1,11 +1,11 @@
 // src/services/backend.ts
+import type { Chat, Message, Credits, BotVersion } from "./types";
 import { supabase } from "@/integrations/supabase/client";
 import type { Tables } from "@/integrations/supabase/types";
 
 /* ---------------------------------- helpers --------------------------------- */
 
-const API =
-  import.meta.env.VITE_OFFLINE_API?.replace(/\/$/, "") || "http://localhost:5001";
+const API = import.meta.env.VITE_OFFLINE_API || "http://localhost:5001";
 
 function authHeader() {
   const tok = localStorage.getItem("offline_token") || "";
@@ -35,16 +35,22 @@ async function api<T = any>(
   return data as T;
 }
 
+/** Normalize various backend shapes into { remaining: number } */
 function toCreditsRow(row: any): Credits {
-  // Accept many shapes and always return a safe number
+  // New monthly payload: { plan, chat: { remaining }, ocr_bill: {...}, ocr_bank: {...}, ... }
   if (row && typeof row === "object") {
-    if (typeof row.remaining === "number") return { remaining: row.remaining };
-    if (typeof row.credits === "number") return { remaining: row.credits };
-    if (row.credits && typeof row.credits.remaining === "number") {
-      return { remaining: row.credits.remaining };
+    if (typeof row.remaining === "number") return { remaining: row.remaining }; // legacy simple
+    if (typeof row.remaining_simple === "number") return { remaining: row.remaining_simple }; // helper we added
+    if (row.chat && typeof row.chat.remaining === "number") {
+      return { remaining: Number(row.chat.remaining) };
     }
-    // Supabase/other shapes could be nested under data
-    if (row.data && typeof row.data === "object") return toCreditsRow(row.data);
+    if (row.credits && typeof row.credits === "object") {
+      // some server responses nest things
+      return toCreditsRow(row.credits);
+    }
+    if (row.data && typeof row.data === "object") {
+      return toCreditsRow(row.data);
+    }
   }
   const n = Number(row);
   return { remaining: Number.isFinite(n) ? n : 0 };
@@ -54,7 +60,7 @@ function toCreditsRow(row: any): Credits {
 
 export default {
   async getCredits(): Promise<Credits> {
-    // Flask RPC returns: { data: { credits: { remaining: number } } }
+    // Flask RPC returns: { data: { credits: payload } }
     const r = await api<{ data?: { credits?: any } }>("/rpc/get_credits", {
       method: "POST",
       body: JSON.stringify({}),
@@ -100,9 +106,16 @@ export default {
     });
   },
 
-  async listMessages(chatId: string, limit = 200, offset = 0): Promise<Message[]> {
+  // Allow passing AbortSignal (used by Index.tsx)
+  async listMessages(
+    chatId: string,
+    limit = 200,
+    offset = 0,
+    extra?: { signal?: AbortSignal }
+  ): Promise<Message[]> {
     const r = await api<{ rows: Message[] }>("/db/messages", {
       method: "GET",
+      ...(extra?.signal ? { signal: extra.signal } : {}),
       query: {
         chat_id: chatId,
         _order_col: "created_at",
@@ -124,9 +137,8 @@ export default {
       }),
     });
 
-    // If the backend blocked due to credits, it returns:
-    // { error: "insufficient_credits", data: { credits: { remaining } } }
-    if ((r as any)?.error === "insufficient_credits") {
+    // New backend returns 200 with { errorCode: "INSUFFICIENT_CREDITS", data: { credits: payload } }
+    if (r?.errorCode === "INSUFFICIENT_CREDITS") {
       return { errorCode: "INSUFFICIENT_CREDITS", credits: toCreditsRow(r?.data?.credits) };
     }
 
@@ -165,9 +177,6 @@ export default {
     return r;
   },
 
-  // register now supports BOTH signatures:
-  //   register("Name", "email@x.com", "pass")
-  //   register({ name: "Name", email: "email@x.com", password: "pass" })
   async register(
     arg1: string | { name: string; email: string; password: string },
     email?: string,

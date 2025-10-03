@@ -36,7 +36,9 @@ export default function Index() {
   const loadSeq = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
   const activeIdRef = useRef<string | null>(null);
-  useEffect(() => { activeIdRef.current = activeId; }, [activeId]);
+  useEffect(() => {
+    activeIdRef.current = activeId;
+  }, [activeId]);
 
   useEffect(() => {
     document.title = "AI Chat – Multi-Version Assistant";
@@ -47,15 +49,29 @@ export default function Index() {
     if (!loading && !user) window.location.href = "/auth";
   }, [loading, user]);
 
+  /** Centralized credits refresh so ChatHeader + guards stay in sync */
+  const refreshCredits = async () => {
+    try {
+      const c = await service.getCredits();
+      setCredits(c);
+    } catch {
+      setCredits({ remaining: 0 });
+    }
+  };
+
+  // Refresh credits when the tab regains focus
+  useEffect(() => {
+    const onFocus = () => refreshCredits();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, []);
+
   // Initial credits + chats
   useEffect(() => {
     if (!user) return;
     (async () => {
       try {
-        const [c, list] = await Promise.all([
-          service.getCredits(),
-          service.listChats(1000, 0),
-        ]);
+        const [c, list] = await Promise.all([service.getCredits(), service.listChats(1000, 0)]);
         setCredits(c);
         setChats(list);
         if (list.length === 0) {
@@ -79,7 +95,7 @@ export default function Index() {
     ++loadSeq.current;
 
     setActiveId(asId(id));
-    setMessages([]);      // immediate blank state
+    setMessages([]); // immediate blank state
     setShowTyping(false);
   };
 
@@ -95,12 +111,9 @@ export default function Index() {
 
     (async () => {
       try {
-        const rows: Message[] = await (service as any).listMessages(
-          activeId,
-          200,
-          0,
-          { signal: abortRef.current?.signal } // ok if service ignores
-        );
+        const rows: Message[] = await service.listMessages(activeId, 200, 0, {
+          signal: abortRef.current?.signal,
+        });
 
         if (seq !== loadSeq.current) return; // stale response → ignore
 
@@ -176,8 +189,12 @@ export default function Index() {
     if (!id || sending) return;
 
     if ((credits?.remaining ?? 0) <= 0) {
-      pushNotice("Credits not enough.");
-      return;
+      // Sync with backend once more before blocking
+      await refreshCredits();
+      if ((credits?.remaining ?? 0) <= 0) {
+        pushNotice("Credits not enough.");
+        return;
+      }
     }
 
     setSending(true);
@@ -199,12 +216,14 @@ export default function Index() {
       if (res?.errorCode === "INSUFFICIENT_CREDITS") {
         setShowTyping(false);
         setMessages((m) => m.filter((x) => (x as any).id !== tmp.id));
+        await refreshCredits();
         pushNotice("Credits not enough.");
         return;
       }
 
       const { assistant, credits: newCredits } = res || {};
       if (newCredits) setCredits(newCredits);
+      else await refreshCredits();
 
       // If user switched chats while sending, don't append here
       if (activeIdRef.current !== id) return;
@@ -228,8 +247,11 @@ export default function Index() {
     if (!id || sending) return;
 
     if ((credits?.remaining ?? 0) <= 0) {
-      pushNotice("Credits not enough.");
-      return;
+      await refreshCredits();
+      if ((credits?.remaining ?? 0) <= 0) {
+        pushNotice("Credits not enough.");
+        return;
+      }
     }
 
     setSending(true);
@@ -239,12 +261,14 @@ export default function Index() {
 
       if (res?.errorCode === "INSUFFICIENT_CREDITS") {
         setShowTyping(false);
+        await refreshCredits();
         pushNotice("Credits not enough.");
         return;
       }
 
       const { assistant, credits: newCredits } = res || {};
       if (newCredits) setCredits(newCredits);
+      else await refreshCredits();
 
       if (activeIdRef.current !== id) return;
 
@@ -288,7 +312,7 @@ export default function Index() {
 
           {/* ONLY this section scrolls */}
           <section
-            key={activeId ?? "none"}  // force remount on chat switch
+            key={activeId ?? "none"} // force remount on chat switch
             ref={scrollerRef}
             className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-4 space-y-4 break-words"
             aria-live="polite"
@@ -304,8 +328,12 @@ export default function Index() {
                 key={String(m.id)}
                 message={{ ...m, role: m.role ?? m.content?.role ?? "assistant" } as any}
                 onCopy={async (text) => {
-                  try { await navigator.clipboard.writeText(text); toast({ title: "Copied" }); }
-                  catch { toast({ title: "Copy failed" }); }
+                  try {
+                    await navigator.clipboard.writeText(text);
+                    toast({ title: "Copied" });
+                  } catch {
+                    toast({ title: "Copy failed" });
+                  }
                 }}
                 onRegenerate={(t) => regenerate(t)}
               />
