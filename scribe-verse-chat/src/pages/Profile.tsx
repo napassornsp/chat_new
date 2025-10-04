@@ -1,26 +1,26 @@
 // src/pages/Profile.tsx
 import { useEffect, useMemo, useState } from "react";
+import { Crown, Shield, Building2, Info } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
-import { Upload, Save, Crown, Shield, Building2, Info } from "lucide-react";
+
+/* ----------------------------- Types & constants ---------------------------- */
 
 type MeResponse = {
   id: number;
   email: string;
   name: string;
-  profile?: { full_name?: string; avatar_url?: string | null };
 };
 
+type CreditBucket = { limit: number | null; remaining: number | null; used: number; percent_used: number | null };
 type CreditsPayload = {
   plan: "free" | "plus" | "business" | "admin";
-  chat: { limit: number; remaining: number; used: number; percent_used: number };
-  ocr_bill: { limit: number; remaining: number; used: number; percent_used: number };
-  ocr_bank: { limit: number; remaining: number; used: number; percent_used: number };
   last_reset_at?: string | null;
+  chat: CreditBucket;
+  ocr_bill: CreditBucket;
+  ocr_bank: CreditBucket;
 };
 
 const API = import.meta.env.VITE_OFFLINE_API || "http://localhost:5001";
-// TODO: set to your real checkout URL when you have one
-const BILLING_URL = "/billing";
 
 function authHeaders() {
   const token = localStorage.getItem("offline_token");
@@ -29,10 +29,18 @@ function authHeaders() {
     : { "Content-Type": "application/json" };
 }
 
-/* ---------- tiny UI helpers ---------- */
-function SectionTitle({ children, className = "" }: { children: React.ReactNode; className?: string }) {
+/* -------------------------------- UI helpers ------------------------------- */
+
+function SectionTitle({
+  children,
+  className = "",
+}: {
+  children: React.ReactNode;
+  className?: string;
+}) {
   return <h2 className={`text-sm font-medium mb-3 ${className}`}>{children}</h2>;
 }
+
 function Badge({ children }: { children: React.ReactNode }) {
   return (
     <span className="inline-flex items-center rounded-full border px-2 py-0.5 text-xs text-muted-foreground">
@@ -40,65 +48,85 @@ function Badge({ children }: { children: React.ReactNode }) {
     </span>
   );
 }
-function Progress({ value }: { value: number }) {
-  const v = Math.max(0, Math.min(100, Math.round(value)));
+
+/** Remaining (dark) over Used (light) dual bar */
+function RemainingBar({ limit, remaining }: { limit: number | null; remaining: number | null }) {
+  if (limit === null || remaining === null) {
+    // contract-based / unlimited – show full bar with em dash
+    return (
+      <div className="relative h-2 w-full rounded-full overflow-hidden">
+        <div className="absolute inset-0 bg-muted" />
+        <div className="absolute inset-y-0 left-0 bg-primary/70" style={{ width: `100%` }} />
+        <div className="absolute inset-0 ring-1 ring-black/5 rounded-full pointer-events-none" />
+      </div>
+    );
+  }
+  const lim = Math.max(0, limit);
+  const rem = Math.max(0, Math.min(remaining, lim));
+  const remPct = lim > 0 ? Math.round((rem / lim) * 100) : 0;
   return (
-    <div className="h-2 w-full rounded-full bg-muted overflow-hidden">
-      <div className="h-full bg-gradient-to-r from-primary to-cyan-400" style={{ width: `${v}%` }} />
+    <div className="relative h-2 w-full rounded-full overflow-hidden">
+      <div className="absolute inset-0 bg-muted" />
+      <div className="absolute inset-y-0 left-0 bg-primary/70" style={{ width: `${remPct}%` }} />
+      <div className="absolute inset-0 ring-1 ring-black/5 rounded-full pointer-events-none" />
     </div>
   );
 }
-/* ------------------------------------ */
+
+/* --------------------------------- Page ------------------------------------ */
 
 export default function Profile() {
   const { toast } = useToast();
 
-  // profile state
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
   const [email, setEmail] = useState("");
-  const [username, setUsername] = useState("");
-  const [fullName, setFullName] = useState("");
-  const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
 
-  // optional UI-only fields
-  const [firstName, setFirstName] = useState("");
-  const [lastName, setLastName] = useState("");
-  const [website, setWebsite] = useState("");
-  const [about, setAbout] = useState("");
+  // password change
   const [oldPw, setOldPw] = useState("");
   const [newPw, setNewPw] = useState("");
+  const [changingPw, setChangingPw] = useState(false);
 
   // plan/credits
   const [credits, setCredits] = useState<CreditsPayload | null>(null);
-  const [changingPlan, setChangingPlan] = useState(false);
+
+  // Sales modal state (shared for Plus & Business)
   const [contactOpen, setContactOpen] = useState(false);
+  const [contactLoading, setContactLoading] = useState(false);
+  const [desiredPlan, setDesiredPlan] = useState<"plus" | "business">("plus");
+  const [cName, setCName] = useState("");
+  const [cEmail, setCEmail] = useState("");
+  const [cPhone, setCPhone] = useState("");
+  const [cCompany, setCCompany] = useState("");
+  const [cLocation, setCLocation] = useState("");
+  const [cMsg, setCMsg] = useState("");
 
   const currentPlan = credits?.plan ?? "free";
   const isAdmin = currentPlan === "admin" || email === "admin@example.com";
 
-  // ---------- profile ----------
+  /* ----------------------------- Load profile ------------------------------ */
   useEffect(() => {
     (async () => {
       try {
         const r = await fetch(`${API}/me`, { headers: authHeaders() });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
         const data = (await r.json()) as MeResponse;
         setEmail(data.email ?? "");
-        setUsername(data.name ?? "");
-        setFullName(data.profile?.full_name ?? "");
-        setAvatarUrl((data.profile?.avatar_url as string) ?? null);
-      } catch {
-        toast({ title: "Failed to load profile", variant: "destructive" });
+      } catch (e: any) {
+        toast({ title: "Failed to load profile", description: String(e?.message ?? e), variant: "destructive" });
       } finally {
         setLoading(false);
       }
     })();
   }, []);
 
-  // ---------- credits ----------
+  /* ----------------------------- Load credits ------------------------------ */
   async function fetchCredits() {
     try {
-      const r = await fetch(`${API}/rpc/get_credits`, { method: "POST", headers: authHeaders() });
+      const r = await fetch(`${API}/rpc/get_credits`, {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({}),
+      });
       const d = await r.json();
       setCredits(d?.data?.credits ?? null);
     } catch {
@@ -116,56 +144,45 @@ export default function Profile() {
     };
   }, []);
 
-  // ---------- actions ----------
-  async function onSave(e: React.FormEvent) {
+  /* -------------------------------- Actions -------------------------------- */
+  async function changePassword(e: React.FormEvent) {
     e.preventDefault();
-    if (saving) return;
-    setSaving(true);
+    if (!oldPw || !newPw) {
+      toast({ title: "Enter both old and new password", variant: "destructive" });
+      return;
+    }
+    setChangingPw(true);
     try {
-      const payload = {
-        name: username,
-        full_name: fullName || `${firstName} ${lastName}`.trim(),
-        avatar_url: avatarUrl,
-      };
-      const r = await fetch(`${API}/me`, {
-        method: "PUT",
+      const r = await fetch(`${API}/auth/change-password`, {
+        method: "POST",
         headers: authHeaders(),
-        body: JSON.stringify(payload),
+        body: JSON.stringify({ old_password: oldPw, new_password: newPw }),
       });
-      if (!r.ok) throw new Error("Save failed");
-      toast({ title: "Profile updated" });
+      const body = await r.json().catch(() => ({}));
+      if (!r.ok || body?.error) {
+        throw new Error(body?.error || `HTTP ${r.status}`);
+      }
+      toast({ title: "Password changed" });
+      setOldPw("");
+      setNewPw("");
     } catch (err: any) {
-      toast({ title: "Save failed", description: String(err?.message ?? err), variant: "destructive" });
+      toast({
+        title: "Password change failed",
+        description: String(err?.message ?? err),
+        variant: "destructive",
+      });
     } finally {
-      setSaving(false);
-    }
-  }
-
-  function onAvatarPick(file: File) {
-    const reader = new FileReader();
-    reader.onload = () => setAvatarUrl(reader.result as string);
-    reader.readAsDataURL(file);
-  }
-
-  async function upgradeTo(plan: "plus" | "business") {
-    // Offline: simulate change; replace with real checkout later.
-    if (plan === "plus") {
-      window.location.href = BILLING_URL; // go to purchase page
-      return;
-    }
-    if (plan === "business") {
-      setContactOpen(true); // open contact modal
-      return;
+      setChangingPw(false);
     }
   }
 
   const initials = useMemo(() => {
-    const src = fullName || username || email || "";
-    const parts = src.trim().split(/\s+/);
-    const first = (parts[0] || "").charAt(0);
-    const second = (parts[1] || "").charAt(0);
-    return (first + second).toUpperCase() || "U";
-  }, [fullName, username, email]);
+    const src = email || "";
+    const first = src.trim().charAt(0);
+    return (first || "U").toUpperCase();
+  }, [email]);
+
+  /* --------------------------------- Render -------------------------------- */
 
   if (loading) {
     return (
@@ -176,63 +193,75 @@ export default function Profile() {
     );
   }
 
+  function submitContactSales() {
+    throw new Error("Function not implemented.");
+  }
+
   return (
-    <div className="px-6 py-4 h-[calc(100vh-60px)]"> {/* take available height under app header */}
-      {/* Header (no extra top tab) */}
+    <div className="px-6 py-4 h-[calc(100vh-60px)]">
       <div className="mb-4">
         <h1 className="text-xl font-semibold">Profile</h1>
         <p className="text-sm text-muted-foreground">Manage your account, credits and plan.</p>
       </div>
 
-      {/* Layout: left column is account; right column scrolls */}
-      <form
-        onSubmit={onSave}
-        className="grid grid-cols-1 xl:grid-cols-3 gap-6 h-[calc(100%-56px)]"
-      >
-        {/* LEFT COLUMN ----------------------------------------------------- */}
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 h-[calc(100%-56px)]">
+        {/* LEFT: Account (email only) + password ------------------------------ */}
         <section className="xl:col-span-1 space-y-6 overflow-y-auto pr-1">
-          {/* Account */}
           <div className="rounded-xl border bg-card p-4 shadow-sm">
             <SectionTitle>Account</SectionTitle>
-            <div className="flex items-center gap-4">
-              <div className="relative h-24 w-24 rounded-xl overflow-hidden border bg-muted flex items-center justify-center text-xl font-semibold">
-                {avatarUrl ? (
-                  <img src={avatarUrl} alt="Avatar" className="h-full w-full object-cover" />
-                ) : (
-                  <span>{initials}</span>
-                )}
+
+            <div className="flex items-center gap-3">
+              <div className="h-12 w-12 rounded-full bg-muted grid place-items-center font-semibold">
+                {initials}
               </div>
-              <div className="space-y-2">
-                <label className="inline-flex items-center gap-2 text-sm cursor-pointer">
-                  <input
-                    type="file"
-                    accept="image/*"
-                    className="hidden"
-                    onChange={(e) => e.target.files?.[0] && onAvatarPick(e.target.files[0])}
-                  />
-                  <span className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 hover:bg-muted">
-                    <Upload className="h-4 w-4" />
-                    Upload photo
-                  </span>
-                </label>
-                {avatarUrl && (
-                  <button
-                    type="button"
-                    onClick={() => setAvatarUrl(null)}
-                    className="text-xs text-muted-foreground underline"
-                  >
-                    Remove photo
-                  </button>
-                )}
+              <div className="flex-1">
+                <div>
+                  <label className="text-xs uppercase text-muted-foreground">Email</label>
+                  <input value={email} disabled className="mt-1 w-full rounded-md border px-3 py-2 bg-muted" />
+                </div>
               </div>
-            </div>
-            <div className="mt-4">
-              <label className="text-xs uppercase text-muted-foreground">Email</label>
-              <input value={email} disabled className="mt-1 w-full rounded-md border px-3 py-2 bg-muted" />
             </div>
           </div>
 
-          {/* Credits (TOP of plans) */}
+          <div className="rounded-xl border bg-card p-4 shadow-sm">
+            <SectionTitle>Change password</SectionTitle>
+            <form className="grid grid-cols-1 gap-3" onSubmit={changePassword}>
+              <div>
+                <label className="text-sm">Old Password</label>
+                <input
+                  type="password"
+                  value={oldPw}
+                  onChange={(e) => setOldPw(e.target.value)}
+                  className="mt-1 w-full rounded-md border px-3 py-2"
+                  placeholder="Current password"
+                />
+              </div>
+              <div>
+                <label className="text-sm">New Password</label>
+                <input
+                  type="password"
+                  value={newPw}
+                  onChange={(e) => setNewPw(e.target.value)}
+                  className="mt-1 w-full rounded-md border px-3 py-2"
+                  placeholder="New password"
+                />
+              </div>
+              <div className="flex items-center justify-end">
+                <button
+                  type="submit"
+                  disabled={changingPw}
+                  className="rounded-md border px-3 py-1.5 text-sm hover:bg-muted disabled:opacity-60"
+                >
+                  {changingPw ? "Updating…" : "Update password"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </section>
+
+        {/* RIGHT: Credits + Plans ---------------------------------------------- */}
+        <section className="xl:col-span-2 space-y-6 overflow-y-auto pr-1">
+          {/* Credits */}
           <div className="rounded-xl border bg-card p-4 shadow-sm">
             <SectionTitle>Credits remaining</SectionTitle>
 
@@ -242,23 +271,20 @@ export default function Profile() {
               <>
                 <Bucket
                   title="Chat credits"
-                  value={credits?.chat.remaining ?? 0}
-                  limit={credits?.chat.limit ?? 0}
-                  usedPct={credits?.chat.percent_used ?? 0}
+                  remaining={credits?.chat.remaining ?? null}
+                  limit={credits?.chat.limit ?? null}
                 />
                 <Bucket
                   title="OCR: Bill"
                   className="mt-3"
-                  value={credits?.ocr_bill.remaining ?? 0}
-                  limit={credits?.ocr_bill.limit ?? 0}
-                  usedPct={credits?.ocr_bill.percent_used ?? 0}
+                  remaining={credits?.ocr_bill.remaining ?? null}
+                  limit={credits?.ocr_bill.limit ?? null}
                 />
                 <Bucket
                   title="OCR: Bank"
                   className="mt-3"
-                  value={credits?.ocr_bank.remaining ?? 0}
-                  limit={credits?.ocr_bank.limit ?? 0}
-                  usedPct={credits?.ocr_bank.percent_used ?? 0}
+                  remaining={credits?.ocr_bank.remaining ?? null}
+                  limit={credits?.ocr_bank.limit ?? null}
                 />
                 <p className="mt-3 text-xs text-muted-foreground">
                   Counters reset automatically each month. Last reset:&nbsp;
@@ -279,80 +305,48 @@ export default function Profile() {
                       <span className="font-medium">OCR</span> charges 1 credit when you click <b>Analyze</b>. Bill and
                       Bank are tracked separately.
                     </li>
-                    <li>All counters reset monthly (automatic—no manual reset).</li>
+                    <li>All counters reset monthly.</li>
                   </ul>
                 </div>
               </>
             )}
           </div>
 
-          {/* Plan (below credits) */}
+          {/* Current plan card */}
           <div className="rounded-xl border bg-card p-4 shadow-sm">
             <SectionTitle>Current plan</SectionTitle>
+
             <div className="space-y-3">
-              {/* Free */}
-              <PlanRow
-                active={isAdmin ? false : currentPlan === "free"}
-                icon={<Shield className="h-4 w-4" />}
-                title="Free"
-                subtitle="Good for getting started."
-                bullets={["Chat 100 per month", "OCR Bill 3 / OCR Bank 3 per month"]}
-                rightBadge={!isAdmin && currentPlan === "free" ? <Badge>Current plan</Badge> : null}
-                action={
-                  !isAdmin && currentPlan === "free" ? (
-                    <button
-                      type="button"
-                      onClick={() => upgradeTo("plus")}
-                      className="rounded-md bg-primary text-primary-foreground px-3 py-1.5 text-sm"
-                    >
-                      Purchase Plus
-                    </button>
-                  ) : null
-                }
-              />
-
-              {/* Plus */}
-              <PlanRow
-                active={currentPlan === "plus"}
-                icon={<Crown className="h-4 w-4" />}
-                title="Plus"
-                subtitle="More headroom for power users."
-                bullets={["Chat 500 per month", "OCR Bill 20 / OCR Bank 20 per month"]}
-                rightBadge={!isAdmin && currentPlan === "plus" ? <Badge>Current plan</Badge> : null}
-                action={
-                  !isAdmin && currentPlan !== "plus" ? (
-                    <button
-                      type="button"
-                      onClick={() => upgradeTo("plus")}
-                      className="rounded-md border px-3 py-1.5 text-sm hover:bg-muted"
-                    >
-                      Purchase
-                    </button>
-                  ) : null
-                }
-              />
-
-              {/* Business */}
-              <PlanRow
-                active={currentPlan === "business"}
-                icon={<Building2 className="h-4 w-4" />}
-                title="Business"
-                subtitle="Adjustable limits and support."
-                bullets={["Higher adjustable limits", "Priority help & advice"]}
-                rightBadge={!isAdmin && currentPlan === "business" ? <Badge>Current plan</Badge> : null}
-                action={
-                  !isAdmin ? (
-                    <button
-                      type="button"
-                      onClick={() => upgradeTo("business")}
-                      className="rounded-md border px-3 py-1.5 text-sm hover:bg-muted"
-                    >
-                      Contact sales
-                    </button>
-                  ) : null
-                }
-              />
-
+              {currentPlan === "free" && (
+                <PlanRow
+                  active
+                  icon={<Shield className="h-4 w-4" />}
+                  title="Free"
+                  subtitle="Good for getting started."
+                  bullets={["Chat 100 per month", "OCR Bill 3 / OCR Bank 3 per month"]}
+                  rightBadge={<Badge>Current plan</Badge>}
+                />
+              )}
+              {currentPlan === "plus" && (
+                <PlanRow
+                  active
+                  icon={<Crown className="h-4 w-4" />}
+                  title="Plus"
+                  subtitle="More headroom for power users."
+                  bullets={["Chat 1000 per month", "OCR Bill 100 / OCR Bank 100 per month"]}
+                  rightBadge={<Badge>Current plan</Badge>}
+                />
+              )}
+              {currentPlan === "business" && (
+                <PlanRow
+                  active
+                  icon={<Building2 className="h-4 w-4" />}
+                  title="Business"
+                  subtitle="Contract-based limits."
+                  bullets={["Limits defined in your contract", "Priority assistance"]}
+                  rightBadge={<Badge>Current plan</Badge>}
+                />
+              )}
               {isAdmin && (
                 <div className="rounded-md bg-muted/60 p-3 text-xs text-muted-foreground">
                   Admin account: unlimited credits for all tasks.
@@ -360,115 +354,55 @@ export default function Profile() {
               )}
             </div>
           </div>
+
+          {/* Actions */}
+          {!isAdmin && currentPlan !== "plus" && (
+            <ActionRow
+              icon={<Crown className="h-4 w-4" />}
+              title="Upgrade to Plus"
+              description="Talk to a person and complete purchase."
+              action={
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDesiredPlan("plus");
+                    setCEmail(email || "");
+                    setCMsg("I’d like to purchase the Plus plan.");
+                    setContactOpen(true);
+                  }}
+                  className="rounded-md border px-3 py-1.5 text-sm hover:bg-muted"
+                >
+                  Contact sales
+                </button>
+              }
+            />
+          )}
+
+          {!isAdmin && currentPlan !== "business" && (
+            <ActionRow
+              icon={<Building2 className="h-4 w-4" />}
+              title="Contact Sales for Business"
+              description="Talk to a person to tailor limits and support."
+              action={
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDesiredPlan("business");
+                    setCEmail(email || "");
+                    setCMsg("I’m interested in the Business plan and tailored limits.");
+                    setContactOpen(true);
+                  }}
+                  className="rounded-md border px-3 py-1.5 text-sm hover:bg-muted"
+                >
+                  Contact sales
+                </button>
+              }
+            />
+          )}
         </section>
+      </div>
 
-        {/* RIGHT COLUMN (scrollable) ------------------------------------- */}
-        <section className="xl:col-span-2 space-y-6 overflow-y-auto pr-1">
-          <div className="rounded-xl border bg-card p-4 shadow-sm">
-            <SectionTitle>Profile Information</SectionTitle>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div>
-                <label className="text-sm">Username (Display name)</label>
-                <input
-                  className="mt-1 w-full rounded-md border px-3 py-2"
-                  value={username}
-                  onChange={(e) => setUsername(e.target.value)}
-                  placeholder="e.g. jane_doe"
-                />
-              </div>
-              <div>
-                <label className="text-sm">Full Name</label>
-                <input
-                  className="mt-1 w-full rounded-md border px-3 py-2"
-                  value={fullName}
-                  onChange={(e) => setFullName(e.target.value)}
-                  placeholder="Jane Doe"
-                />
-              </div>
-
-              <div>
-                <label className="text-sm">First Name</label>
-                <input
-                  className="mt-1 w-full rounded-md border px-3 py-2"
-                  value={firstName}
-                  onChange={(e) => setFirstName(e.target.value)}
-                  placeholder="Jane"
-                />
-              </div>
-              <div>
-                <label className="text-sm">Last Name</label>
-                <input
-                  className="mt-1 w-full rounded-md border px-3 py-2"
-                  value={lastName}
-                  onChange={(e) => setLastName(e.target.value)}
-                  placeholder="Doe"
-                />
-              </div>
-
-              <div className="sm:col-span-2">
-                <label className="text-sm">Website</label>
-                <input
-                  className="mt-1 w-full rounded-md border px-3 py-2"
-                  value={website}
-                  onChange={(e) => setWebsite(e.target.value)}
-                  placeholder="https://example.com"
-                />
-              </div>
-
-              <div className="sm:col-span-2">
-                <label className="text-sm">About</label>
-                <textarea
-                  className="mt-1 w-full rounded-md border px-3 py-2 min-h-[96px] resize-y"
-                  value={about}
-                  onChange={(e) => setAbout(e.target.value)}
-                  placeholder="Brief bio or role…"
-                />
-              </div>
-            </div>
-
-            <div className="mt-4 flex items-center justify-end gap-3">
-              <button
-                type="submit"
-                disabled={saving}
-                className="inline-flex items-center gap-2 rounded-md bg-primary text-primary-foreground px-4 py-2 disabled:opacity-60"
-              >
-                <Save className="h-4 w-4" />
-                {saving ? "Saving…" : "Save changes"}
-              </button>
-            </div>
-          </div>
-
-          {/* Security (visual only) */}
-          <div className="rounded-xl border bg-card p-4 shadow-sm">
-            <SectionTitle>Security</SectionTitle>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div>
-                <label className="text-sm">Old Password</label>
-                <input
-                  type="password"
-                  value={oldPw}
-                  onChange={(e) => setOldPw(e.target.value)}
-                  className="mt-1 w-full rounded-md border px-3 py-2"
-                />
-              </div>
-              <div>
-                <label className="text-sm">New Password</label>
-                <input
-                  type="password"
-                  value={newPw}
-                  onChange={(e) => setNewPw(e.target.value)}
-                  className="mt-1 w-full rounded-md border px-3 py-2"
-                />
-              </div>
-            </div>
-            <p className="mt-2 text-xs text-muted-foreground">
-              (Visual only) Wire this to a Flask endpoint when you’re ready to change passwords.
-            </p>
-          </div>
-        </section>
-      </form>
-
-      {/* Contact sales modal */}
+      {/* Shared Contact/Purchase modal for Plus & Business */}
       {contactOpen && (
         <div
           className="fixed inset-0 z-50 grid place-items-center bg-black/40"
@@ -480,38 +414,102 @@ export default function Profile() {
             className="w-[92vw] max-w-lg rounded-xl bg-background p-5 shadow-xl"
             onClick={(e) => e.stopPropagation()}
           >
-            <h3 className="text-lg font-semibold">Contact sales</h3>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Tell us a bit about your needs and we’ll reach out.
+            <div className="mb-2 flex items-center gap-2">
+              <Building2 className="h-5 w-5" />
+              <h3 className="text-lg font-semibold">
+                {desiredPlan === "plus" ? "Contact Sales – Plus" : "Contact Sales – Business"}
+              </h3>
+            </div>
+
+            <p className="text-sm text-muted-foreground">
+              Prefer phone? Call <b>081-XXXXXX</b>. Company: <b>YourCo Ltd.</b>, Location:{" "}
+              <b>Bangkok, Thailand</b>.
             </p>
+
             <form
               className="mt-4 space-y-3"
               onSubmit={(e) => {
                 e.preventDefault();
-                // simulate submit
-                setContactOpen(false);
-                // show toast?
-                toast({ title: "Thanks! We’ll be in touch shortly." });
+                submitContactSales();
               }}
             >
-              <div>
-                <label className="text-sm">Company / Team</label>
-                <input className="mt-1 w-full rounded-md border px-3 py-2" required />
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="text-sm">Your name</label>
+                  <input
+                    className="mt-1 w-full rounded-md border px-3 py-2"
+                    value={cName}
+                    onChange={(e) => setCName(e.target.value)}
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="text-sm">Email</label>
+                  <input
+                    type="email"
+                    className="mt-1 w-full rounded-md border px-3 py-2"
+                    value={cEmail}
+                    onChange={(e) => setCEmail(e.target.value)}
+                    required
+                  />
+                </div>
               </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="text-sm">Phone</label>
+                  <input
+                    className="mt-1 w-full rounded-md border px-3 py-2"
+                    value={cPhone}
+                    onChange={(e) => setCPhone(e.target.value)}
+                    placeholder="081-xxxxxxx"
+                  />
+                </div>
+                <div>
+                  <label className="text-sm">Company</label>
+                  <input
+                    className="mt-1 w-full rounded-md border px-3 py-2"
+                    value={cCompany}
+                    onChange={(e) => setCCompany(e.target.value)}
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="text-sm">Location</label>
+                <input
+                  className="mt-1 w-full rounded-md border px-3 py-2"
+                  value={cLocation}
+                  onChange={(e) => setCLocation(e.target.value)}
+                  placeholder="City / Country"
+                />
+              </div>
+
               <div>
                 <label className="text-sm">Message</label>
-                <textarea className="mt-1 w-full rounded-md border px-3 py-2 min-h-[96px]" required />
+                <textarea
+                  className="mt-1 w-full rounded-md border px-3 py-2 min-h-[96px]"
+                  value={cMsg}
+                  onChange={(e) => setCMsg(e.target.value)}
+                  required
+                />
               </div>
+
               <div className="flex items-center justify-end gap-2">
                 <button
                   type="button"
                   className="rounded-md border px-3 py-1.5 text-sm hover:bg-muted"
                   onClick={() => setContactOpen(false)}
+                  disabled={contactLoading}
                 >
                   Cancel
                 </button>
-                <button type="submit" className="rounded-md bg-primary text-primary-foreground px-3 py-1.5 text-sm">
-                  Send
+                <button
+                  type="submit"
+                  className="rounded-md bg-primary text-primary-foreground px-3 py-1.5 text-sm disabled:opacity-60"
+                  disabled={contactLoading}
+                >
+                  {contactLoading ? "Sending…" : "Send"}
                 </button>
               </div>
             </form>
@@ -522,7 +520,8 @@ export default function Profile() {
   );
 }
 
-/* ---------- subcomponents ---------- */
+/* -------------------------- subcomponents (bottom) -------------------------- */
+
 function PlanRow({
   active,
   icon,
@@ -530,7 +529,6 @@ function PlanRow({
   subtitle,
   bullets,
   rightBadge,
-  action,
 }: {
   active?: boolean;
   icon: React.ReactNode;
@@ -538,7 +536,6 @@ function PlanRow({
   subtitle: string;
   bullets: string[];
   rightBadge?: React.ReactNode;
-  action?: React.ReactNode;
 }) {
   return (
     <div className={`rounded-lg border p-3 ${active ? "ring-2 ring-primary" : ""}`}>
@@ -550,10 +547,7 @@ function PlanRow({
             <div className="text-xs text-muted-foreground">{subtitle}</div>
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          {rightBadge}
-          {action}
-        </div>
+        <div className="flex items-center gap-2">{rightBadge}</div>
       </div>
       <ul className="mt-2 text-xs text-muted-foreground list-disc pl-5 space-y-1">
         {bullets.map((b, i) => (
@@ -564,28 +558,51 @@ function PlanRow({
   );
 }
 
+function ActionRow({
+  icon,
+  title,
+  description,
+  action,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  description: string;
+  action: React.ReactNode;
+}) {
+  return (
+    <div className="rounded-xl border bg-card p-4 shadow-sm flex items-center justify-between">
+      <div className="flex items-center gap-3">
+        {icon}
+        <div>
+          <div className="font-medium">{title}</div>
+          <div className="text-sm text-muted-foreground">{description}</div>
+        </div>
+      </div>
+      <div>{action}</div>
+    </div>
+  );
+}
+
 function Bucket({
   title,
-  value,
+  remaining,
   limit,
-  usedPct,
   className = "",
 }: {
   title: string;
-  value: number;
-  limit: number;
-  usedPct: number;
+  remaining: number | null;
+  limit: number | null;
   className?: string;
 }) {
+  const rightText =
+    limit === null || remaining === null ? "—" : `${remaining}/${limit}`;
   return (
     <div className={className}>
       <div className="mb-1 flex items-center justify-between text-sm">
         <span className="font-medium">{title}</span>
-        <span className="text-muted-foreground">
-          {value}/{limit}
-        </span>
+        <span className="text-muted-foreground">{rightText}</span>
       </div>
-      <Progress value={usedPct} />
+      <RemainingBar limit={limit} remaining={remaining} />
     </div>
   );
 }

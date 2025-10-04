@@ -82,16 +82,98 @@ function toCreditsFull(payload: any): CreditsFull {
   };
 }
 
+/* --------------------------------- Profile ---------------------------------- */
+/** Minimal profile (no avatar for now) */
+export type Profile = {
+  email: string;
+  display_name: string; // map backend name/username to this
+  plan?: string;
+};
+
+function toProfile(payload: any): Profile {
+  // Supports:
+  // - GET /me -> user object directly (id, email, name, profile…)
+  // - GET /auth/me -> { user: {...} }
+  const p =
+    payload?.user ??
+    payload?.data?.profile ??
+    payload?.profile ??
+    payload?.data ??
+    payload ??
+    {};
+  return {
+    email: String(p?.email ?? ""),
+    display_name: String(p?.display_name ?? p?.username ?? p?.name ?? ""),
+    plan: p?.plan ? String(p.plan) : undefined,
+  };
+}
+
+/** Robust profile fetch that matches app.py */
+async function tryGetProfile(): Promise<Profile> {
+  // 1) GET /me
+  try {
+    const r = await api<any>("/me", { method: "GET" });
+    return toProfile(r);
+  } catch {}
+
+  // 2) GET /auth/me
+  try {
+    const r = await api<any>("/auth/me", { method: "GET" });
+    return toProfile(r);
+  } catch {}
+
+  return { email: "", display_name: "" };
+}
+
+/** Profile update = PUT /me with { name } */
+async function tryUpdateProfile(
+  patch: Partial<Pick<Profile, "display_name">>
+): Promise<Profile> {
+  const payload = { name: patch.display_name };
+  const r = await api<any>("/me", {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
+  return toProfile(r);
+}
+
+/** Password change with fallbacks (primary matches app.py) */
+async function tryChangePassword(old_password: string, new_password: string): Promise<void> {
+  // 1) /auth/change-password (exists in app.py)
+  try {
+    await api("/auth/change-password", {
+      method: "POST",
+      body: JSON.stringify({ old_password, new_password }),
+    });
+    return;
+  } catch {}
+
+  // 2) /auth/password (fallback if you ever add it)
+  try {
+    await api("/auth/password", {
+      method: "POST",
+      body: JSON.stringify({ old_password, new_password }),
+    });
+    return;
+  } catch {}
+
+  // 3) RPC fallback (optional)
+  await api("/rpc/change_password", {
+    method: "POST",
+    body: JSON.stringify({ old_password, new_password }),
+  });
+}
+
 /* ------------------------------ OCR data types ------------------------------- */
 
 type OcrType = "bill" | "bank";
 
 export type OcrRow = {
   id: string;
-  type: OcrType;           // attached by client
+  type: OcrType; // attached by client
   filename: string | null;
   file_url: string | null;
-  data: any;               // parsed OCR JSON
+  data: any; // parsed OCR JSON
   approved?: boolean;
   created_at: string;
 };
@@ -255,6 +337,35 @@ export default {
       await api("/auth/logout", { method: "POST", body: JSON.stringify({}) });
     } catch {}
     localStorage.removeItem("offline_token");
+  },
+
+  /* -------------------------------- Profile -------------------------------- */
+
+  /** Load profile (email, display_name, plan) */
+  async getProfile(): Promise<Profile> {
+    return tryGetProfile();
+  },
+
+  /** Update profile fields (display_name) and return updated Profile */
+  async updateProfile(patch: Partial<Pick<Profile, "display_name">>): Promise<Profile> {
+    return tryUpdateProfile(patch);
+  },
+
+  /** Change password by providing old and new password */
+  async changePassword(old_password: string, new_password: string): Promise<void> {
+    return tryChangePassword(old_password, new_password);
+  },
+
+  /** Optional: create an upgrade request so Sales can contact the user */
+  async requestUpgrade(plan: string): Promise<void> {
+    try {
+      await api("/billing/upgrade-request", {
+        method: "POST",
+        body: JSON.stringify({ plan }),
+      });
+    } catch {
+      // non-fatal
+    }
   },
 
   /* ---------------------------------- OCR ---------------------------------- */

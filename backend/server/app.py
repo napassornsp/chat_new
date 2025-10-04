@@ -52,12 +52,14 @@ class User(db.Model):
             d["profile"] = prof.to_dict() if prof else None
         return d
 
+
 class Profile(db.Model):
     __tablename__ = "profiles"
     id = db.Column(Integer, primary_key=True)
     full_name = db.Column(String, nullable=True)
     avatar_url = db.Column(String, nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
     def to_dict(self):
         return {
             "id": self.id,
@@ -66,10 +68,11 @@ class Profile(db.Model):
             "created_at": self.created_at.isoformat(),
         }
 
+
 class UserCredit(db.Model):
     __tablename__ = "user_credits"
     id = db.Column(Integer, primary_key=True)  # == users.id
-    # New monthly counters / plan fields
+    # Plan + monthly counters
     plan = db.Column(String, default="free")  # free | plus | business | admin
     chat_used = db.Column(Integer, default=0)
     ocr_bill_used = db.Column(Integer, default=0)
@@ -78,6 +81,11 @@ class UserCredit(db.Model):
     updated_at = db.Column(db.DateTime, default=datetime.utcnow)
     # legacy column (ignored by new code, kept for migration safety)
     credits = db.Column(Integer, default=0)
+    # NEW: per-user override limits (nullable). If set (>0) they override plan defaults.
+    chat_limit = db.Column(Integer, nullable=True)
+    ocr_bill_limit = db.Column(Integer, nullable=True)
+    ocr_bank_limit = db.Column(Integer, nullable=True)
+
 
 class Chat(db.Model):
     __tablename__ = "chats"
@@ -89,6 +97,7 @@ class Chat(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow)
 
+
 class Message(db.Model):
     __tablename__ = "messages"
     id = db.Column(Integer, primary_key=True)
@@ -96,6 +105,7 @@ class Message(db.Model):
     user_id = db.Column(Integer, db.ForeignKey("users.id"), nullable=True)
     content_json = db.Column(SQLITE_JSON, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
 
 # ---------- OCR (new columns used by frontend) ----------
 class OCRBillExtract(db.Model):
@@ -108,6 +118,7 @@ class OCRBillExtract(db.Model):
     data_json = db.Column(SQLITE_JSON, nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
+
 class OCRBankExtract(db.Model):
     __tablename__ = "ocr_bank_extractions"
     id = db.Column(Integer, primary_key=True)
@@ -118,6 +129,7 @@ class OCRBankExtract(db.Model):
     data_json = db.Column(SQLITE_JSON, nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
+
 class Notification(db.Model):
     __tablename__ = "notifications"
     id = db.Column(Integer, primary_key=True)
@@ -127,21 +139,33 @@ class Notification(db.Model):
     read_at = db.Column(db.DateTime, nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
+
 class Session(db.Model):
     __tablename__ = "sessions"
     token = db.Column(String, primary_key=True)
     user_id = db.Column(Integer, db.ForeignKey("users.id"), nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
+
+# NEW: requests captured from “Contact sales / Purchase” popup
+class SalesRequest(db.Model):
+    __tablename__ = "sales_requests"
+    id = db.Column(Integer, primary_key=True)
+    user_id = db.Column(Integer, db.ForeignKey("users.id"), nullable=False)
+    requested_plan = db.Column(String, nullable=True)  # "plus" | "business"
+    name = db.Column(String, nullable=True)
+    email = db.Column(String, nullable=True)
+    phone = db.Column(String, nullable=True)
+    company = db.Column(String, nullable=True)
+    location = db.Column(String, nullable=True)
+    message = db.Column(Text, nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+
 # ---------- Vision: Flower (YOLO-style dummy) ----------
 @app.post("/vision/flower/detect")
 def flower_detect():
-    """
-    Accepts multipart/form-data with 'file'.
-    Returns YOLO-like dummy boxes for flowers so the frontend can render rectangles.
-    """
-    current_user_required()  # keep or stub, depending on your setup
-
+    current_user_required()
     f = request.files.get("file")
     w, h = 640, 480
     try:
@@ -150,11 +174,10 @@ def flower_detect():
             w, h = im.size
     except Exception:
         pass
-
     boxes = [
-        {"label": "Rose",      "conf": 0.95, "xyxy": [int(0.05*w), int(0.15*h), int(0.45*w), int(0.70*h)], "color": "#ef4444"},
-        {"label": "Tulip",     "conf": 0.88, "xyxy": [int(0.55*w), int(0.25*h), int(0.90*w), int(0.70*h)], "color": "#22c55e"},
-        {"label": "Sunflower", "conf": 0.82, "xyxy": [int(0.62*w), int(0.06*h), int(0.95*w), int(0.24*h)], "color": "#06b6d4"},
+        {"label": "Rose", "conf": 0.95, "xyxy": [int(0.05 * w), int(0.15 * h), int(0.45 * w), int(0.70 * h)], "color": "#ef4444"},
+        {"label": "Tulip","conf": 0.88, "xyxy": [int(0.55 * w), int(0.25 * h), int(0.90 * w), int(0.70 * h)], "color": "#22c55e"},
+        {"label": "Sunflower","conf": 0.82, "xyxy": [int(0.62 * w), int(0.06 * h), int(0.95 * w), int(0.24 * h)], "color": "#06b6d4"},
     ]
     return jsonify({"image": {"width": w, "height": h}, "boxes": boxes})
 
@@ -162,12 +185,7 @@ def flower_detect():
 # ---------- Vision: Person (YOLO-style dummy) ----------
 @app.post("/vision/person/detect")
 def person_detect():
-    """
-    Accepts multipart/form-data with 'file'.
-    Returns YOLO-like dummy boxes (person-safe, non-sensitive labels).
-    """
-    current_user_required()  # keep or stub depending on your setup
-
+    current_user_required()
     f = request.files.get("file")
     w, h = 640, 480
     try:
@@ -176,27 +194,19 @@ def person_detect():
             w, h = im.size
     except Exception:
         pass
-
     boxes = [
-        # person 1
-        {"label": "Person",     "conf": 0.97, "xyxy": [int(0.06*w), int(0.12*h), int(0.42*w), int(0.86*h)], "color": "#3b82f6"},
-        # person 2
-        {"label": "Person",     "conf": 0.94, "xyxy": [int(0.55*w), int(0.18*h), int(0.92*w), int(0.88*h)], "color": "#10b981"},
-        # optional regions (non-sensitive)
-        {"label": "Face",       "conf": 0.91, "xyxy": [int(0.16*w), int(0.18*h), int(0.28*w), int(0.34*h)], "color": "#f59e0b"},
-        {"label": "Upper Body", "conf": 0.88, "xyxy": [int(0.62*w), int(0.36*h), int(0.88*w), int(0.70*h)], "color": "#ef4444"},
+        {"label": "Person","conf": 0.97, "xyxy": [int(0.06 * w), int(0.12 * h), int(0.42 * w), int(0.86 * h)], "color": "#3b82f6"},
+        {"label": "Person","conf": 0.94, "xyxy": [int(0.55 * w), int(0.18 * h), int(0.92 * w), int(0.88 * h)], "color": "#10b981"},
+        {"label": "Face","conf": 0.91, "xyxy": [int(0.16 * w), int(0.18 * h), int(0.28 * w), int(0.34 * h)], "color": "#f59e0b"},
+        {"label": "Upper Body","conf": 0.88, "xyxy": [int(0.62 * w), int(0.36 * h), int(0.88 * w), int(0.70 * h)], "color": "#ef4444"},
     ]
     return jsonify({"image": {"width": w, "height": h}, "boxes": boxes})
+
 
 # ---------- Vision: Pet (YOLO-style dummy) ----------
 @app.post("/vision/pet/detect")
 def pet_detect():
-    """
-    Accepts multipart/form-data with 'file'.
-    Returns YOLO-like dummy boxes for pets so the frontend can render rectangles.
-    """
-    current_user_required()  # keep/stub based on your setup
-
+    current_user_required()
     f = request.files.get("file")
     w, h = 640, 480
     try:
@@ -205,14 +215,10 @@ def pet_detect():
             w, h = im.size
     except Exception:
         pass
-
     boxes = [
-        # pet 1 (dog)
-        {"label": "Dog",    "conf": 0.96, "xyxy": [int(0.08*w), int(0.45*h), int(0.52*w), int(0.92*h)], "color": "#10b981"},
-        # pet 2 (cat)
-        {"label": "Cat",    "conf": 0.92, "xyxy": [int(0.60*w), int(0.30*h), int(0.92*w), int(0.78*h)], "color": "#f59e0b"},
-        # accessory/region (non-sensitive)
-        {"label": "Collar", "conf": 0.85, "xyxy": [int(0.22*w), int(0.70*h), int(0.36*w), int(0.78*h)], "color": "#3b82f6"},
+        {"label": "Dog","conf": 0.96, "xyxy": [int(0.08 * w), int(0.45 * h), int(0.52 * w), int(0.92 * h)], "color": "#10b981"},
+        {"label": "Cat","conf": 0.92, "xyxy": [int(0.60 * w), int(0.30 * h), int(0.92 * w), int(0.78 * h)], "color": "#f59e0b"},
+        {"label": "Collar","conf": 0.85, "xyxy": [int(0.22 * w), int(0.70 * h), int(0.36 * w), int(0.78 * h)], "color": "#3b82f6"},
     ]
     return jsonify({"image": {"width": w, "height": h}, "boxes": boxes})
 
@@ -220,12 +226,7 @@ def pet_detect():
 # ---------- Vision: Vehicle (YOLO-style dummy) ----------
 @app.post("/vision/vehicle/detect")
 def vehicle_detect():
-    """
-    Accepts multipart/form-data with 'file'.
-    Returns YOLO-like dummy boxes for vehicles so the frontend can render rectangles.
-    """
     current_user_required()
-
     f = request.files.get("file")
     w, h = 640, 480
     try:
@@ -234,23 +235,18 @@ def vehicle_detect():
             w, h = im.size
     except Exception:
         pass
-
     boxes = [
-        {"label": "Vehicle: Car", "conf": 0.97, "xyxy": [int(0.06*w), int(0.40*h), int(0.60*w), int(0.88*h)], "color": "#ef4444"},
-        {"label": "Vehicle: Truck", "conf": 0.90, "xyxy": [int(0.62*w), int(0.32*h), int(0.94*w), int(0.82*h)], "color": "#06b6d4"},
-        {"label": "Wheel", "conf": 0.86, "xyxy": [int(0.20*w), int(0.78*h), int(0.30*w), int(0.90*h)], "color": "#22c55e"},
-        {"label": "Headlight", "conf": 0.83, "xyxy": [int(0.50*w), int(0.52*h), int(0.58*w), int(0.60*h)], "color": "#f59e0b"},
+        {"label": "Vehicle: Car","conf": 0.97, "xyxy": [int(0.06 * w), int(0.40 * h), int(0.60 * w), int(0.88 * h)], "color": "#ef4444"},
+        {"label": "Vehicle: Truck","conf": 0.90, "xyxy": [int(0.62 * w), int(0.32 * h), int(0.94 * w), int(0.82 * h)], "color": "#06b6d4"},
+        {"label": "Wheel","conf": 0.86, "xyxy": [int(0.20 * w), int(0.78 * h), int(0.30 * w), int(0.90 * h)], "color": "#22c55e"},
+        {"label": "Headlight","conf": 0.83, "xyxy": [int(0.50 * w), int(0.52 * h), int(0.58 * w), int(0.60 * h)], "color": "#f59e0b"},
     ]
-
     return jsonify({"image": {"width": w, "height": h}, "boxes": boxes})
+
 
 # ---------- Vision: Food Classification (mock) ----------
 @app.post("/vision/food/classify")
 def vision_food_classify():
-    """
-    Mock classifier: returns a few food classes with confidences.
-    Expects multipart/form-data with a 'file' field.
-    """
     current_user_required()
     width, height = 640, 480
     try:
@@ -259,7 +255,6 @@ def vision_food_classify():
             img = Image.open(f.stream); width, height = img.size
     except Exception:
         pass
-
     classes = [
         {"label": "Italian Cuisine", "confidence": 0.95},
         {"label": "Pasta", "confidence": 0.88},
@@ -268,20 +263,12 @@ def vision_food_classify():
     return jsonify({"image": {"width": width, "height": height}, "classes": classes})
 
 
-
-
 # ---------- Vision: person Classification (mock) ----------
 @app.post("/vision/person/classify")
 def vision_person_classify():
-    """
-    Returns person-related classes with confidences.
-    Expects multipart/form-data with a 'file' field.
-    """
     current_user_required()
-
     import time
     t0 = time.time()
-
     width, height = 640, 480
     try:
         f = request.files.get("file")
@@ -289,76 +276,58 @@ def vision_person_classify():
             img = Image.open(f.stream)
             width, height = img.size
     except Exception:
-        # keep fallback size
         pass
-
-    # Non-sensitive, safe labels
     classes = [
-        {"label": "Person Detected",    "confidence": 0.98},
-        {"label": "Frontal Face",       "confidence": 0.93},
-        {"label": "Pose: Standing",     "confidence": 0.88},
-        {"label": "Wearing Glasses",    "confidence": 0.67},
+        {"label": "Person Detected", "confidence": 0.98},
+        {"label": "Frontal Face", "confidence": 0.93},
+        {"label": "Pose: Standing", "confidence": 0.88},
+        {"label": "Wearing Glasses", "confidence": 0.67},
         {"label": "Upper Body Visible", "confidence": 0.81},
     ]
-
     payload = {
         "image": {"width": width, "height": height},
         "classes": classes,
-        # You can change/add fields anytime; the Raw tab will show them
         "model": {"name": "mock-person-v1", "version": "1.0.0"},
         "meta": {"elapsed_ms": int((time.time() - t0) * 1000)},
     }
     return jsonify(payload), 200
 
+
 # ---------- Vision: Pet Classification (mock) ----------
 @app.post("/vision/pet/classify")
 def vision_pet_classify():
-    """
-    Returns pet-related classes with confidences.
-    Expects multipart/form-data with a 'file' field.
-    """
     current_user_required()
-
     import time
     t0 = time.time()
-
     width, height = 640, 480
     try:
-      f = request.files.get("file")
-      if f and Image is not None:
-          img = Image.open(f.stream)
-          width, height = img.size
+        f = request.files.get("file")
+        if f and Image is not None:
+            img = Image.open(f.stream)
+            width, height = img.size
     except Exception:
-      pass
-
+        pass
     classes = [
         {"label": "Pet Detected", "confidence": 0.98},
         {"label": "Animal: Dog", "confidence": 0.94},
         {"label": "Animal: Cat", "confidence": 0.86},
         {"label": "Wearing Collar", "confidence": 0.72},
     ]
-
     payload = {
         "image": {"width": width, "height": height},
         "classes": classes,
-        # Add whatever else you want; Raw tab will show it
         "model": {"name": "mock-pet-v1", "version": "1.0.0"},
         "meta": {"elapsed_ms": int((time.time() - t0) * 1000)},
     }
     return jsonify(payload), 200
 
-# ---------- Vision: Vehicle Classification (backend is source of truth) ----------
+
+# ---------- Vision: Vehicle Classification (mock) ----------
 @app.post("/vision/vehicle/classify")
 def vision_vehicle_classify():
-    """
-    Returns vehicle-related classes with confidences.
-    Expects multipart/form-data with a 'file' field.
-    """
     current_user_required()
-
     import time
     t0 = time.time()
-
     width, height = 640, 480
     try:
         f = request.files.get("file")
@@ -366,9 +335,7 @@ def vision_vehicle_classify():
             img = Image.open(f.stream)
             width, height = img.size
     except Exception:
-        pass  # keep fallback dimensions
-
-    # Safe, non-PII labels; avoid plate numbers or personal identifiers
+        pass
     classes = [
         {"label": "Vehicle Detected", "confidence": 0.98},
         {"label": "Type: Car",        "confidence": 0.92},
@@ -376,7 +343,6 @@ def vision_vehicle_classify():
         {"label": "View: Side",       "confidence": 0.76},
         {"label": "Color: Red",       "confidence": 0.64},
     ]
-
     payload = {
         "image": {"width": width, "height": height},
         "classes": classes,
@@ -385,10 +351,12 @@ def vision_vehicle_classify():
     }
     return jsonify(payload), 200
 
+
 # ---------- Helpers ----------
 def now_ym():
     dt = datetime.now(timezone.utc)
     return f"{dt.year:04d}-{dt.month:02d}"
+
 
 def current_user():
     token = request.headers.get("Authorization", "").replace("Bearer ", "")
@@ -397,14 +365,17 @@ def current_user():
     sess = Session.query.filter_by(token=token).first()
     return db.session.get(User, sess.user_id) if sess else None
 
+
 @app.before_request
 def attach_user():
     g.user = current_user()
+
 
 def current_user_required():
     if not g.user:
         abort(401)
     return g.user
+
 
 def ser(o):
     d = {c.name: getattr(o, c.name) for c in o.__table__.columns}
@@ -440,8 +411,10 @@ def ser(o):
 
     return d
 
+
 def model_columns(Model):
     return {c.name for c in Model.__table__.columns}
+
 
 def sanitize_row(Model, row: dict):
     row = dict(row or {})
@@ -464,6 +437,7 @@ def sanitize_row(Model, row: dict):
 
     return {k: v for k, v in row.items() if k in cols}
 
+
 @app.after_request
 def add_cors_headers(resp):
     origin = request.headers.get("Origin")
@@ -473,14 +447,17 @@ def add_cors_headers(resp):
     resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PATCH, DELETE, OPTIONS"
     return resp
 
+
 @app.route("/<path:_p>", methods=["OPTIONS"])
 def cors_preflight(_p):
     return make_response("", 204)
+
 
 # ---------- Auto-migrate ----------
 def column_exists(table: str, column: str) -> bool:
     rows = db.session.execute(text(f"PRAGMA table_info({table})")).mappings().all()
     return any(r["name"] == column for r in rows)
+
 
 def auto_migrate():
     # messages.content_json
@@ -514,20 +491,44 @@ def auto_migrate():
         db.session.execute(text("ALTER TABLE user_credits ADD COLUMN ocr_bank_used INTEGER DEFAULT 0"))
     if not column_exists("user_credits", "last_reset_at"):
         db.session.execute(text("ALTER TABLE user_credits ADD COLUMN last_reset_at TEXT"))
+
+    # NEW: per-user override limits
+    if not column_exists("user_credits", "chat_limit"):
+        db.session.execute(text("ALTER TABLE user_credits ADD COLUMN chat_limit INTEGER"))
+    if not column_exists("user_credits", "ocr_bill_limit"):
+        db.session.execute(text("ALTER TABLE user_credits ADD COLUMN ocr_bill_limit INTEGER"))
+    if not column_exists("user_credits", "ocr_bank_limit"):
+        db.session.execute(text("ALTER TABLE user_credits ADD COLUMN ocr_bank_limit INTEGER"))
     db.session.commit()
+
 
 # ---------- Plans / limits ----------
 CHAT_COST = {"V1": 1, "V2": 2, "V3": 3}
 
-def plan_limits(plan: str):
+def plan_defaults(plan: str):
+    """
+    Default plan catalog. Business is contract-based (None = not fixed).
+    """
     p = (plan or "free").lower()
     if p == "plus":
-        return {"chat": 500, "bill": 20, "bank": 20}
-    if p == "business":
         return {"chat": 1000, "bill": 100, "bank": 100}
+    if p == "business":
+        return {"chat": None, "bill": None, "bank": None}  # contract-based
     if p == "admin":
         return {"chat": 10_000_000, "bill": 10_000_000, "bank": 10_000_000}
     return {"chat": 100, "bill": 3, "bank": 3}  # free
+
+def effective_limits(row: "UserCredit"):
+    """
+    Effective user limits:
+    - If per-user override exists (>0), use it.
+    - Else use plan defaults (Business -> None = contract-based).
+    """
+    d = plan_defaults(row.plan)
+    chat = row.chat_limit if (row.chat_limit or 0) > 0 else d["chat"]
+    bill = row.ocr_bill_limit if (row.ocr_bill_limit or 0) > 0 else d["bill"]
+    bank = row.ocr_bank_limit if (row.ocr_bank_limit or 0) > 0 else d["bank"]
+    return {"chat": chat, "bill": bill, "bank": bank}
 
 def reset_month_if_needed(row: UserCredit):
     ym = now_ym()
@@ -539,13 +540,17 @@ def reset_month_if_needed(row: UserCredit):
 
 def credits_payload(row: UserCredit):
     reset_month_if_needed(row)
-    lim = plan_limits(row.plan)
+    lim = effective_limits(row)
+
     def pack(used, limit):
         used = int(used or 0)
+        if limit is None:  # contract-based / not fixed
+            return {"limit": None, "used": used, "remaining": None, "percent_used": None}
         limit = int(limit or 0)
         remaining = max(0, limit - used)
         pct = 0 if limit <= 0 else round(min(100, max(0, used * 100 / limit)))
         return {"limit": limit, "used": used, "remaining": remaining, "percent_used": pct}
+
     return {
         "plan": row.plan or "free",
         "chat": pack(row.chat_used, lim["chat"]),
@@ -558,10 +563,10 @@ def load_or_create_credits(user_id: int, plan_default="free") -> UserCredit:
     row = db.session.get(UserCredit, user_id)
     if not row:
         row = UserCredit(id=user_id, plan=plan_default, last_reset_at=now_ym())
-        db.session.add(row)
-        db.session.commit()
+        db.session.add(row); db.session.commit()
     reset_month_if_needed(row)
     return row
+
 
 # ---------- Seed ----------
 def _ensure_user(
@@ -571,10 +576,6 @@ def _ensure_user(
     plan: str = "free",
     first_chat_title: str = "General",
 ):
-    """
-    Create the user if missing and ensure related rows exist.
-    Initialize UserCredit with a plan + monthly counters (not legacy numeric 'credits').
-    """
     u = User.query.filter_by(email=email).first()
     if not u:
         u = User(email=email, name=name, password_hash=generate_password_hash(password))
@@ -612,16 +613,36 @@ def _ensure_user(
 def seed():
     db.create_all()
     auto_migrate()
+    # Admin (unlimited)
+    _ensure_user("admin@example.com", "Admin", password="admin123", plan="admin", first_chat_title="Welcome")
+    # Free
+    _ensure_user("free@example.com", "Free User", password="free123", plan="free", first_chat_title="Welcome")
+    # Plus
+    _ensure_user("plus@example.com", "Plus User", password="plus123", plan="plus", first_chat_title="Welcome")
+    # Business (contract-based by default; you can set per-user overrides later)
+    _ensure_user("business@example.com", "Business User", password="biz123", plan="business", first_chat_title="Welcome")
 
-    # Admin
-    _ensure_user("admin@example.com","Admin",password="admin123",plan="admin",first_chat_title="Welcome")
-    # Regular user
-    _ensure_user("user@example.com","V1 User",password="user123",plan="free",first_chat_title="Welcome")
 
 # ---------- Health ----------
 @app.get("/health")
 def health():
     return jsonify({"ok": True})
+
+
+# ---------- Plan catalog (for UI cards) ----------
+@app.get("/plans")
+def plans_catalog():
+    """
+    Master plan catalog for the UI. Business is contract-based (None).
+    """
+    return jsonify({
+        "plans": {
+            "free":     {"chat": 100,  "bill": 3,   "bank": 3},
+            "plus":     {"chat": 1000, "bill": 100, "bank": 100},
+            "business": {"chat": None, "bill": None, "bank": None},
+        }
+    })
+
 
 # ---------- Auth ----------
 @app.post("/auth/signup")
@@ -667,11 +688,30 @@ def logout():
     db.session.commit()
     return jsonify({"ok": True})
 
+# NEW: change password
+@app.post("/auth/change-password")
+def change_password():
+    u = current_user_required()
+    data = request.get_json(silent=True) or {}
+    old_pw = (data.get("old_password") or "").strip()
+    new_pw = (data.get("new_password") or "").strip()
+    if not old_pw or not new_pw:
+        return jsonify({"error": "missing_fields"}), 400
+    if not check_password_hash(u.password_hash, old_pw):
+        return jsonify({"error": "old_password_incorrect"}), 400
+    u.password_hash = generate_password_hash(new_pw)
+    db.session.commit()
+    return jsonify({"ok": True})
+
+
 # ---------- Profile ----------
 @app.get("/me")
 def get_me():
     u = current_user_required()
-    return jsonify(u.to_dict(include_profile=True))
+    d = u.to_dict(include_profile=True)
+    uc = load_or_create_credits(u.id)
+    d["plan"] = uc.plan or "free"
+    return jsonify(d)
 
 @app.put("/me")
 def update_me():
@@ -684,6 +724,16 @@ def update_me():
     db.session.add(prof); db.session.commit()
     return jsonify(u.to_dict(include_profile=True))
 
+# Aliases for UI flexibility
+@app.get("/me/profile")
+def me_profile_get():
+    return get_me()
+
+@app.patch("/me/profile")
+def me_profile_patch():
+    return update_me()
+
+
 # ---------- Credits ----------
 @app.post("/rpc/get_credits")
 def rpc_get_credits():
@@ -691,8 +741,11 @@ def rpc_get_credits():
     row = load_or_create_credits(g.user.id)
     db.session.commit()
     payload = credits_payload(row)
-    payload["remaining_simple"] = int(payload["chat"]["remaining"])
+    # keep a simple numeric for legacy clients; use a large number for contract-based
+    rem = payload["chat"]["remaining"]
+    payload["remaining_simple"] = (rem if isinstance(rem, int) else 10_000_000)
     return jsonify({"data": {"credits": payload}})
+
 
 # ---------- Chat function ----------
 def _ensure_user_message_inserted(u, chat_id: int, text: str, version: str):
@@ -716,17 +769,19 @@ def functions_invoke(name):
     cost = CHAT_COST.get(version, 2)
 
     row = load_or_create_credits(g.user.id)
-    lim = plan_limits(row.plan)
+    lim = effective_limits(row)
     reset_month_if_needed(row)
     db.session.commit()
 
-    remaining = max(0, lim["chat"] - (row.chat_used or 0))
-    if remaining < cost:
-        return jsonify({
-            "errorCode": "INSUFFICIENT_CREDITS",
-            "message": "Not enough credits",
-            "data": {"credits": credits_payload(row)}
-        }), 200
+    # If chat limit is None => contract-based (no cap here)
+    if lim["chat"] is not None:
+        remaining = max(0, int(lim["chat"]) - (row.chat_used or 0))
+        if remaining < cost:
+            return jsonify({
+                "errorCode": "INSUFFICIENT_CREDITS",
+                "message": "Not enough credits",
+                "data": {"credits": credits_payload(row)}
+            }), 200
 
     chat_id = body.get("chat_id")
     text = body.get("text") or body.get("user_text") or ""
@@ -767,24 +822,28 @@ def functions_invoke(name):
         }
     })
 
+
 # ---------- Vision: OCR (mock extractors that charge monthly OCR credits) ----------
 def _ocr_charge_and_payload(kind: str):
     """kind = 'bill' | 'bank'"""
     current_user_required()
     row = load_or_create_credits(g.user.id)
     reset_month_if_needed(row)
-    limits = plan_limits(row.plan)
+    limits = effective_limits(row)
 
     used_attr = "ocr_bill_used" if kind == "bill" else "ocr_bank_used"
     used = getattr(row, used_attr) or 0
+
+    # If limit is None => contract-based (no cap); otherwise enforce
     limit = limits["bill"] if kind == "bill" else limits["bank"]
-    remaining = max(0, limit - used)
-    if remaining <= 0:
-        return None, jsonify({
-            "errorCode": "INSUFFICIENT_CREDITS",
-            "message": "Not enough OCR credits",
-            "data": {"credits": credits_payload(row)}
-        }), 200
+    if limit is not None:
+        remaining = max(0, int(limit) - used)
+        if remaining <= 0:
+            return None, jsonify({
+                "errorCode": "INSUFFICIENT_CREDITS",
+                "message": "Not enough OCR credits",
+                "data": {"credits": credits_payload(row)}
+            }), 200
 
     setattr(row, used_attr, used + 1)
     row.updated_at = datetime.utcnow()
@@ -796,50 +855,28 @@ def vision_ocr_bill():
     row, err_resp, err_code = _ocr_charge_and_payload("bill")
     if err_resp is not None:
         return err_resp, err_code
-
     f = request.files.get("file")
     filename = getattr(f, "filename", None)
-
     fields = {
-        "buyer_name_thai": "",
-        "seller_name_thai": "",
-        "doc_number": "",
+        "buyer_name_thai": "", "seller_name_thai": "", "doc_number": "",
         "doc_date": datetime.utcnow().strftime("%Y-%m-%d"),
-        "currency": "THB",
-        "sub_total": 0,
-        "vat_percent": 7,
-        "vat_amount": 0,
-        "total_due_amount": 0,
-        "table": [],
+        "currency": "THB", "sub_total": 0, "vat_percent": 7, "vat_amount": 0,
+        "total_due_amount": 0, "table": [],
     }
-
-    return jsonify({
-        "data": {"fields": fields, "filename": filename},
-        "credits": credits_payload(row),
-    })
+    return jsonify({"data": {"fields": fields, "filename": filename}, "credits": credits_payload(row)})
 
 @app.post("/vision/ocr/bank")
 def vision_ocr_bank():
     row, err_resp, err_code = _ocr_charge_and_payload("bank")
     if err_resp is not None:
         return err_resp, err_code
-
     f = request.files.get("file")
     filename = getattr(f, "filename", None)
-
     fields = {
-        "account_number": "",
-        "statement_period": "",
-        "currency": "THB",
-        "opening_balance": 0,
-        "closing_balance": 0,
-        "table": [],
+        "account_number": "", "statement_period": "", "currency": "THB",
+        "opening_balance": 0, "closing_balance": 0, "table": [],
     }
-
-    return jsonify({
-        "data": {"fields": fields, "filename": filename},
-        "credits": credits_payload(row),
-    })
+    return jsonify({"data": {"fields": fields, "filename": filename}, "credits": credits_payload(row)})
 
 
 # ---------- OCR: unified history ----------
@@ -878,6 +915,7 @@ def create_notification():
     n = Notification(user_id=g.user.id, title=data.get("title",""), body=data.get("body",""))
     db.session.add(n); db.session.commit()
     return jsonify(ser(n)), 201
+
 
 # ---------- Generic DB (user-scoped where applicable) ----------
 TABLES = {
@@ -999,10 +1037,35 @@ def table_delete(table):
         socketio.emit("db_change", {"eventType":"DELETE","schema":"public","table":table,"new":None,"old":row})
     return jsonify({"rows": payload})
 
+
+# ---------- Billing / Sales ----------
+@app.post("/billing/upgrade-request")
+def billing_upgrade_request():
+    u = current_user_required()
+    data = request.get_json(silent=True) or {}
+    rec = SalesRequest(
+        user_id=u.id,
+        requested_plan=(data.get("plan") or "").lower() or None,
+        name=data.get("name"), email=data.get("email"),
+        phone=data.get("phone"), company=data.get("company"),
+        location=data.get("location"), message=data.get("message"),
+    )
+    db.session.add(rec); db.session.commit()
+    db.session.add(
+        Notification(
+            user_id=u.id,
+            title="Upgrade request received",
+            body=f"Plan: {rec.requested_plan or 'n/a'}",
+        )
+    ); db.session.commit()
+    return jsonify({"ok": True})
+
+
 # ---------- WebSocket ----------
 @socketio.on("connect")
 def ws_connect():
     emit("connected", {"ok": True})
+
 
 # ---------- Main ----------
 if __name__ == "__main__":

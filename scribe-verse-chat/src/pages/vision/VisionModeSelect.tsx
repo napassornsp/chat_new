@@ -4,14 +4,14 @@ import { useLocation, useNavigate } from "react-router-dom";
 type Mode = { value: string; label: string; path: string };
 
 const MODES: Mode[] = [
-  { value: "flower-det",  label: "Flower Detection",      path: "/vision/flower-detection" },
-  { value: "pet-det", label: "Pet Detection",         path: "/vision/pet-detection" },
-  { value: "veh-det", label: "Vehicle Detection",     path: "/vision/vehicle-detection" },
-  { value: "person-det",  label: "Person Detection",      path: "/vision/person-detection" },
-  { value: "food-cls",    label: "Food Classification",   path: "/vision/food-classification" },
+  { value: "flower-cls",  label: "Flower Classification",      path: "/vision/flower-classification" },
   { value: "pet-cls", label: "Pet Classification",    path: "/vision/pet-classification" },
   { value: "veh-cls", label: "Vehicle Classification",path: "/vision/vehicle-classification" },
   { value: "person-cls",  label: "Person Classification",      path: "/vision/person-classification" },
+  { value: "food-det",    label: "Food Detection",   path: "/vision/food-detection" },
+  { value: "pet-det", label: "Pet Detection",         path: "/vision/pet-detection" },
+  { value: "veh-det", label: "Vehicle Detection",     path: "/vision/vehicle-detection" },
+  { value: "person-det",  label: "Person Detection",      path: "/vision/person-detection" },
 ];
 
 export default function VisionModeSelect({ className }: { className?: string }) {
