@@ -11,13 +11,11 @@ type PersonClass = { label: string; confidence: number };
 type PersonResponse = {
   image?: { width: number; height: number };
   classes: PersonClass[];
+  // Optional extra fields from backend (model, meta, etc.) will appear in Raw tab
 };
 
 const API = import.meta.env.VITE_OFFLINE_API || "http://localhost:5001";
 const ENDPOINT = "/vision/person/classify";
-
-// Set this true to always return mock data (no server needed).
-const USE_DUMMY = true;
 
 const authHeader = () => {
   const tok = localStorage.getItem("offline_token") || "";
@@ -42,6 +40,7 @@ export default function PersonClassification() {
   // results
   const [processing, setProcessing] = useState(false);
   const [resp, setResp] = useState<PersonResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [elapsedMs, setElapsedMs] = useState<number | null>(null);
 
   // refs
@@ -56,6 +55,7 @@ export default function PersonClassification() {
   const onFile = (f: File | null) => {
     setFile(f);
     setResp(null);
+    setError(null);
     setElapsedMs(null);
     setView({ scale: 1, dx: 0, dy: 0 });
     if (!f) {
@@ -102,7 +102,7 @@ export default function PersonClassification() {
     ctx.save();
     ctx.translate(view.dx, view.dy);
     ctx.scale(view.scale, view.scale);
-    // IMPORTANT: draw at canvas/scale to avoid double-scaling
+    // draw at canvas/scale to avoid double-scaling
     ctx.drawImage(img, 0, 0, cvs.width / view.scale, cvs.height / view.scale);
     ctx.restore();
   };
@@ -180,6 +180,37 @@ export default function PersonClassification() {
     pinchRef.current = null;
   };
 
+  /* ---------------- backend call (NO client fallback) ---------------- */
+  const analyze = async () => {
+    if (!file) return;
+    setProcessing(true);
+    setResp(null);
+    setError(null);
+    setElapsedMs(null);
+    const t0 = performance.now();
+
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const r = await fetch(`${API}${ENDPOINT}`, {
+        method: "POST",
+        headers: { ...authHeader() },
+        body: fd,
+      });
+      if (!r.ok) {
+        const text = await r.text();
+        throw new Error(`HTTP ${r.status}: ${text}`);
+      }
+      const data: PersonResponse = await r.json();
+      setResp(data); // strictly server-driven
+    } catch (e: any) {
+      setError(e?.message || "Request failed");
+    } finally {
+      setElapsedMs(Math.round(performance.now() - t0));
+      setProcessing(false);
+    }
+  };
+
   const ZoomHUD: React.FC = () => {
     const scale = view.scale;
     const centerZoom = (f: number) => {
@@ -192,73 +223,19 @@ export default function PersonClassification() {
       <div className="absolute right-2 top-2 z-10 select-none">
         <div className="flex items-center gap-2 rounded-md border bg-white/90 backdrop-blur px-2 py-1 shadow-sm">
           <button
-            onClick={(e) => {
-              e.stopPropagation();
-              centerZoom(0.9);
-            }}
+            onClick={(e) => { e.stopPropagation(); centerZoom(0.9); }}
             className="h-6 w-6 grid place-items-center rounded hover:bg-muted text-sm"
-          >
-            −
-          </button>
+          >−</button>
           <span className="text-xs w-[44px] text-center tabular-nums">
             {Math.round(scale * 100)}%
           </span>
           <button
-            onClick={(e) => {
-              e.stopPropagation();
-              centerZoom(1.1);
-            }}
+            onClick={(e) => { e.stopPropagation(); centerZoom(1.1); }}
             className="h-6 w-6 grid place-items-center rounded hover:bg-muted text-sm"
-          >
-            +
-          </button>
+          >+</button>
         </div>
       </div>
     );
-  };
-
-  /* ---------------- backend call (or dummy) ---------------- */
-  const mockResponse = (): PersonResponse => ({
-    image: { width: imgWH?.w || 640, height: imgWH?.h || 480 },
-    classes: [
-      { label: "Person", confidence: 0.99 },
-      { label: "Adult", confidence: 0.93 },
-      { label: "Standing", confidence: 0.88 },
-    ],
-  });
-
-  const analyze = async () => {
-    if (!file) return;
-    setProcessing(true);
-    setResp(null);
-    setElapsedMs(null);
-    const t0 = performance.now();
-
-    try {
-      if (USE_DUMMY) {
-        // Simulate latency
-        await new Promise((r) => setTimeout(r, 400));
-        setResp(mockResponse());
-      } else {
-        const fd = new FormData();
-        fd.append("file", file);
-        const r = await fetch(`${API}${ENDPOINT}`, {
-          method: "POST",
-          headers: { ...authHeader() },
-          body: fd,
-        });
-        const data: PersonResponse = await r.json();
-
-        const safe =
-          data && Array.isArray(data.classes) && data.classes.length ? data : mockResponse();
-        setResp(safe);
-      }
-    } catch {
-      setResp(mockResponse());
-    } finally {
-      setElapsedMs(Math.round(performance.now() - t0));
-      setProcessing(false);
-    }
   };
 
   return (
@@ -333,30 +310,36 @@ export default function PersonClassification() {
                   Processing time: {elapsedMs !== null ? `${elapsedMs} ms` : "–"}
                 </div>
 
-                <div className="rounded-md border">
-                  <div className="grid grid-cols-2 px-3 py-2 text-xs text-muted-foreground border-b">
-                    <span>Label</span>
-                    <span>Confidence</span>
+                {error ? (
+                  <div className="rounded-md border px-3 py-4 text-sm text-red-600">
+                    {error}
                   </div>
-
-                  {resp?.classes?.length ? (
-                    resp.classes.map((c, i) => (
-                      <div key={i} className="grid grid-cols-2 px-3 py-2 text-sm">
-                        <span className="truncate">{c.label}</span>
-                        <span>{(c.confidence * 100).toFixed(1)}%</span>
-                      </div>
-                    ))
-                  ) : (
-                    <div className="px-3 py-4 text-sm text-muted-foreground">
-                      Upload an image and click Analyze.
+                ) : (
+                  <div className="rounded-md border">
+                    <div className="grid grid-cols-2 px-3 py-2 text-xs text-muted-foreground border-b">
+                      <span>Label</span>
+                      <span>Confidence</span>
                     </div>
-                  )}
-                </div>
+
+                    {resp?.classes?.length ? (
+                      resp.classes.map((c, i) => (
+                        <div key={i} className="grid grid-cols-2 px-3 py-2 text-sm">
+                          <span className="truncate">{c.label}</span>
+                          <span>{(c.confidence * 100).toFixed(1)}%</span>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="px-3 py-4 text-sm text-muted-foreground">
+                        {resp ? "No classes returned by server." : "Upload an image and click Analyze."}
+                      </div>
+                    )}
+                  </div>
+                )}
               </TabsContent>
 
               <TabsContent value="raw" className="mt-4">
                 <pre className="text-xs whitespace-pre-wrap text-muted-foreground">
-                  {JSON.stringify(resp ?? {}, null, 2)}
+                  {JSON.stringify(resp ?? (error ? { error } : {}), null, 2)}
                 </pre>
               </TabsContent>
             </Tabs>

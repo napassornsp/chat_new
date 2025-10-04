@@ -134,12 +134,14 @@ class Session(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 # ---------- Vision: Flower (YOLO-style dummy) ----------
-@app.post("/vision/yolo/detect")
-def yolo_detect():
+@app.post("/vision/flower/detect")
+def flower_detect():
     """
-    Accepts multipart/form-data with 'file'
-    Returns YOLO-like dummy boxes so the frontend can render rectangles.
+    Accepts multipart/form-data with 'file'.
+    Returns YOLO-like dummy boxes for flowers so the frontend can render rectangles.
     """
+    current_user_required()  # keep or stub, depending on your setup
+
     f = request.files.get("file")
     w, h = 640, 480
     try:
@@ -150,10 +152,96 @@ def yolo_detect():
         pass
 
     boxes = [
-        {"label": "Rose","conf": 0.95,"xyxy": [int(0.05*w), int(0.15*h), int(0.45*w), int(0.70*h)],"color": "#ef4444"},
-        {"label": "Tulip","conf": 0.88,"xyxy": [int(0.55*w), int(0.25*h), int(0.90*w), int(0.70*h)],"color": "#22c55e"},
-        {"label": "Sunflower","conf": 0.82,"xyxy": [int(0.62*w), int(0.06*h), int(0.95*w), int(0.24*h)],"color": "#06b6d4"},
+        {"label": "Rose",      "conf": 0.95, "xyxy": [int(0.05*w), int(0.15*h), int(0.45*w), int(0.70*h)], "color": "#ef4444"},
+        {"label": "Tulip",     "conf": 0.88, "xyxy": [int(0.55*w), int(0.25*h), int(0.90*w), int(0.70*h)], "color": "#22c55e"},
+        {"label": "Sunflower", "conf": 0.82, "xyxy": [int(0.62*w), int(0.06*h), int(0.95*w), int(0.24*h)], "color": "#06b6d4"},
     ]
+    return jsonify({"image": {"width": w, "height": h}, "boxes": boxes})
+
+
+# ---------- Vision: Person (YOLO-style dummy) ----------
+@app.post("/vision/person/detect")
+def person_detect():
+    """
+    Accepts multipart/form-data with 'file'.
+    Returns YOLO-like dummy boxes (person-safe, non-sensitive labels).
+    """
+    current_user_required()  # keep or stub depending on your setup
+
+    f = request.files.get("file")
+    w, h = 640, 480
+    try:
+        if f is not None and Image is not None:
+            im = Image.open(f.stream)
+            w, h = im.size
+    except Exception:
+        pass
+
+    boxes = [
+        # person 1
+        {"label": "Person",     "conf": 0.97, "xyxy": [int(0.06*w), int(0.12*h), int(0.42*w), int(0.86*h)], "color": "#3b82f6"},
+        # person 2
+        {"label": "Person",     "conf": 0.94, "xyxy": [int(0.55*w), int(0.18*h), int(0.92*w), int(0.88*h)], "color": "#10b981"},
+        # optional regions (non-sensitive)
+        {"label": "Face",       "conf": 0.91, "xyxy": [int(0.16*w), int(0.18*h), int(0.28*w), int(0.34*h)], "color": "#f59e0b"},
+        {"label": "Upper Body", "conf": 0.88, "xyxy": [int(0.62*w), int(0.36*h), int(0.88*w), int(0.70*h)], "color": "#ef4444"},
+    ]
+    return jsonify({"image": {"width": w, "height": h}, "boxes": boxes})
+
+# ---------- Vision: Pet (YOLO-style dummy) ----------
+@app.post("/vision/pet/detect")
+def pet_detect():
+    """
+    Accepts multipart/form-data with 'file'.
+    Returns YOLO-like dummy boxes for pets so the frontend can render rectangles.
+    """
+    current_user_required()  # keep/stub based on your setup
+
+    f = request.files.get("file")
+    w, h = 640, 480
+    try:
+        if f is not None and Image is not None:
+            im = Image.open(f.stream)
+            w, h = im.size
+    except Exception:
+        pass
+
+    boxes = [
+        # pet 1 (dog)
+        {"label": "Dog",    "conf": 0.96, "xyxy": [int(0.08*w), int(0.45*h), int(0.52*w), int(0.92*h)], "color": "#10b981"},
+        # pet 2 (cat)
+        {"label": "Cat",    "conf": 0.92, "xyxy": [int(0.60*w), int(0.30*h), int(0.92*w), int(0.78*h)], "color": "#f59e0b"},
+        # accessory/region (non-sensitive)
+        {"label": "Collar", "conf": 0.85, "xyxy": [int(0.22*w), int(0.70*h), int(0.36*w), int(0.78*h)], "color": "#3b82f6"},
+    ]
+    return jsonify({"image": {"width": w, "height": h}, "boxes": boxes})
+
+
+# ---------- Vision: Vehicle (YOLO-style dummy) ----------
+@app.post("/vision/vehicle/detect")
+def vehicle_detect():
+    """
+    Accepts multipart/form-data with 'file'.
+    Returns YOLO-like dummy boxes for vehicles so the frontend can render rectangles.
+    """
+    current_user_required()
+
+    f = request.files.get("file")
+    w, h = 640, 480
+    try:
+        if f is not None and Image is not None:
+            im = Image.open(f.stream)
+            w, h = im.size
+    except Exception:
+        pass
+
+    boxes = [
+        {"label": "Vehicle: Car", "conf": 0.97, "xyxy": [int(0.06*w), int(0.40*h), int(0.60*w), int(0.88*h)], "color": "#ef4444"},
+        {"label": "Vehicle: Truck", "conf": 0.90, "xyxy": [int(0.62*w), int(0.32*h), int(0.94*w), int(0.82*h)], "color": "#06b6d4"},
+        {"label": "Wheel", "conf": 0.86, "xyxy": [int(0.20*w), int(0.78*h), int(0.30*w), int(0.90*h)], "color": "#22c55e"},
+        {"label": "Headlight", "conf": 0.83, "xyxy": [int(0.50*w), int(0.52*h), int(0.58*w), int(0.60*h)], "color": "#f59e0b"},
+    ]
+
     return jsonify({"image": {"width": w, "height": h}, "boxes": boxes})
 
 # ---------- Vision: Food Classification (mock) ----------
@@ -178,6 +266,124 @@ def vision_food_classify():
         {"label": "Tomato Sauce", "confidence": 0.82},
     ]
     return jsonify({"image": {"width": width, "height": height}, "classes": classes})
+
+
+
+
+# ---------- Vision: person Classification (mock) ----------
+@app.post("/vision/person/classify")
+def vision_person_classify():
+    """
+    Returns person-related classes with confidences.
+    Expects multipart/form-data with a 'file' field.
+    """
+    current_user_required()
+
+    import time
+    t0 = time.time()
+
+    width, height = 640, 480
+    try:
+        f = request.files.get("file")
+        if f and Image is not None:
+            img = Image.open(f.stream)
+            width, height = img.size
+    except Exception:
+        # keep fallback size
+        pass
+
+    # Non-sensitive, safe labels
+    classes = [
+        {"label": "Person Detected",    "confidence": 0.98},
+        {"label": "Frontal Face",       "confidence": 0.93},
+        {"label": "Pose: Standing",     "confidence": 0.88},
+        {"label": "Wearing Glasses",    "confidence": 0.67},
+        {"label": "Upper Body Visible", "confidence": 0.81},
+    ]
+
+    payload = {
+        "image": {"width": width, "height": height},
+        "classes": classes,
+        # You can change/add fields anytime; the Raw tab will show them
+        "model": {"name": "mock-person-v1", "version": "1.0.0"},
+        "meta": {"elapsed_ms": int((time.time() - t0) * 1000)},
+    }
+    return jsonify(payload), 200
+
+# ---------- Vision: Pet Classification (mock) ----------
+@app.post("/vision/pet/classify")
+def vision_pet_classify():
+    """
+    Returns pet-related classes with confidences.
+    Expects multipart/form-data with a 'file' field.
+    """
+    current_user_required()
+
+    import time
+    t0 = time.time()
+
+    width, height = 640, 480
+    try:
+      f = request.files.get("file")
+      if f and Image is not None:
+          img = Image.open(f.stream)
+          width, height = img.size
+    except Exception:
+      pass
+
+    classes = [
+        {"label": "Pet Detected", "confidence": 0.98},
+        {"label": "Animal: Dog", "confidence": 0.94},
+        {"label": "Animal: Cat", "confidence": 0.86},
+        {"label": "Wearing Collar", "confidence": 0.72},
+    ]
+
+    payload = {
+        "image": {"width": width, "height": height},
+        "classes": classes,
+        # Add whatever else you want; Raw tab will show it
+        "model": {"name": "mock-pet-v1", "version": "1.0.0"},
+        "meta": {"elapsed_ms": int((time.time() - t0) * 1000)},
+    }
+    return jsonify(payload), 200
+
+# ---------- Vision: Vehicle Classification (backend is source of truth) ----------
+@app.post("/vision/vehicle/classify")
+def vision_vehicle_classify():
+    """
+    Returns vehicle-related classes with confidences.
+    Expects multipart/form-data with a 'file' field.
+    """
+    current_user_required()
+
+    import time
+    t0 = time.time()
+
+    width, height = 640, 480
+    try:
+        f = request.files.get("file")
+        if f and Image is not None:
+            img = Image.open(f.stream)
+            width, height = img.size
+    except Exception:
+        pass  # keep fallback dimensions
+
+    # Safe, non-PII labels; avoid plate numbers or personal identifiers
+    classes = [
+        {"label": "Vehicle Detected", "confidence": 0.98},
+        {"label": "Type: Car",        "confidence": 0.92},
+        {"label": "Body Style: Sedan","confidence": 0.88},
+        {"label": "View: Side",       "confidence": 0.76},
+        {"label": "Color: Red",       "confidence": 0.64},
+    ]
+
+    payload = {
+        "image": {"width": width, "height": height},
+        "classes": classes,
+        "model": {"name": "mock-vehicle-v1", "version": "1.0.0"},
+        "meta": {"elapsed_ms": int((time.time() - t0) * 1000)},
+    }
+    return jsonify(payload), 200
 
 # ---------- Helpers ----------
 def now_ym():
@@ -634,43 +840,6 @@ def vision_ocr_bank():
         "data": {"fields": fields, "filename": filename},
         "credits": credits_payload(row),
     })
-
-# ---------- Vision: Pet Classification (mock) ----------
-@app.post("/vision/pet/classify")
-def vision_pet_classify():
-    current_user_required()
-    # try to read image size if Pillow exists (optional)
-    width, height = 640, 480
-    try:
-        f = request.files.get("file")
-        if f and Image is not None:
-            img = Image.open(f.stream); width, height = img.size
-    except Exception:
-        pass
-    classes = [
-        {"label": "Dog", "confidence": 0.93},
-        {"label": "Cat", "confidence": 0.86},
-        {"label": "Rabbit", "confidence": 0.21},
-    ]
-    return jsonify({"image": {"width": width, "height": height}, "classes": classes})
-
-# ---------- Vision: Pet Detection (mock) ----------
-@app.post("/vision/pet/detect")
-def vision_pet_detect():
-    current_user_required()
-    f = request.files.get("file")
-    w, h = 640, 480
-    try:
-        if f is not None and Image is not None:
-            im = Image.open(f.stream); w, h = im.size
-    except Exception:
-        pass
-    boxes = [
-        {"label": "Dog", "conf": 0.91, "xyxy": [int(0.10*w), int(0.20*h), int(0.55*w), int(0.85*h)], "color": "#f59e0b"},
-        {"label": "Cat", "conf": 0.78, "xyxy": [int(0.60*w), int(0.25*h), int(0.92*w), int(0.75*h)], "color": "#3b82f6"},
-    ]
-    return jsonify({"image": {"width": w, "height": h}, "boxes": boxes})
-
 
 
 # ---------- OCR: unified history ----------

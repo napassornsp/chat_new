@@ -10,7 +10,8 @@ const MODES: Mode[] = [
   { value: "veh-cls", label: "Vehicle Classification",path: "/vision/vehicle-classification" },
   { value: "pet-det", label: "Pet Detection",         path: "/vision/pet-detection" },
   { value: "veh-det", label: "Vehicle Detection",     path: "/vision/vehicle-detection" },
-  { value: "person",  label: "Person Detection",      path: "/vision/person-detection" },
+  { value: "person-det",  label: "Person Detection",      path: "/vision/person-detection" },
+  { value: "person-cls",  label: "Person Classification",      path: "/vision/person-classification" },
 ];
 
 export default function VisionModeSelect({ className }: { className?: string }) {

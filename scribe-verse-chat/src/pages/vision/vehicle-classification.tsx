@@ -7,24 +7,25 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import VisionModeSelect from "@/pages/vision/VisionModeSelect";
 
-type FoodClass = { label: string; confidence: number };
-type FoodResponse = {
+type VehicleClass = { label: string; confidence: number };
+type VehicleResponse = {
   image?: { width: number; height: number };
-  classes: FoodClass[];
+  classes: VehicleClass[];
+  // any extra fields from backend (model, meta, etc.) will show in Raw tab
 };
 
 const API = import.meta.env.VITE_OFFLINE_API || "http://localhost:5001";
-const ENDPOINT = "/vision/food/classify";
+const ENDPOINT = "/vision/vehicle/classify";
 
 const authHeader = () => {
   const tok = localStorage.getItem("offline_token") || "";
   return tok ? { Authorization: `Bearer ${tok}` } : {};
 };
 
-export default function Food() {
+export default function VehicleClassification() {
   const canonical =
-    typeof window !== "undefined" ? window.location.origin + "/vision/food" : "";
-  const title = useMemo(() => "Food Classification", []);
+    typeof window !== "undefined" ? window.location.origin + "/vision/vehicle" : "";
+  const title = useMemo(() => "Vehicle Classification", []);
 
   // file + image
   const [file, setFile] = useState<File | null>(null);
@@ -36,14 +37,15 @@ export default function Food() {
 
   // results
   const [processing, setProcessing] = useState(false);
-  const [resp, setResp] = useState<FoodResponse | null>(null);
+  const [resp, setResp] = useState<VehicleResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [elapsedMs, setElapsedMs] = useState<number | null>(null);
 
   // refs
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
 
-  // drag/pinch
+  // drag/pinch refs
   const dragRef = useRef<{ dragging: boolean; lastX: number; lastY: number } | null>(null);
   const pinchRef = useRef<{ lastDist: number } | null>(null);
 
@@ -51,6 +53,7 @@ export default function Food() {
   const onFile = (f: File | null) => {
     setFile(f);
     setResp(null);
+    setError(null);
     setElapsedMs(null);
     setView({ scale: 1, dx: 0, dy: 0 });
     if (!f) {
@@ -70,9 +73,7 @@ export default function Food() {
       draw();
     };
     img.src = imgUrl;
-    return () => {
-      imgRef.current = null;
-    };
+    return () => { imgRef.current = null; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [imgUrl]);
 
@@ -90,21 +91,17 @@ export default function Food() {
     if (!cvs || !img || !imgWH) return;
 
     fitCanvasToParent(cvs, imgWH.w, imgWH.h);
-
     const ctx = cvs.getContext("2d")!;
     ctx.clearRect(0, 0, cvs.width, cvs.height);
 
     ctx.save();
     ctx.translate(view.dx, view.dy);
     ctx.scale(view.scale, view.scale);
-    // IMPORTANT: draw at canvas/scale to avoid double-scaling
     ctx.drawImage(img, 0, 0, cvs.width / view.scale, cvs.height / view.scale);
     ctx.restore();
   };
 
-  useEffect(() => {
-    draw();
-  }, [view, imgWH]); // eslint-disable-line
+  useEffect(() => { draw(); }, [view, imgWH]); // eslint-disable-line
 
   /* ---------------- zoom/pan ---------------- */
   const clamp = (s: number) => Math.max(0.2, Math.min(5, s));
@@ -121,7 +118,6 @@ export default function Food() {
     const rect = (e.currentTarget as HTMLCanvasElement).getBoundingClientRect();
     zoomAt(e.clientX - rect.left, e.clientY - rect.top, e.deltaY < 0 ? 1.1 : 0.9);
   };
-
   const onMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
     dragRef.current = { dragging: true, lastX: e.clientX, lastY: e.clientY };
   };
@@ -130,24 +126,15 @@ export default function Food() {
     if (!d?.dragging) return;
     const dx = e.clientX - d.lastX;
     const dy = e.clientY - d.lastY;
-    d.lastX = e.clientX;
-    d.lastY = e.clientY;
+    d.lastX = e.clientX; d.lastY = e.clientY;
     setView((v) => ({ ...v, dx: v.dx + dx, dy: v.dy + dy }));
   };
-  const onMouseUp = () => {
-    if (dragRef.current) dragRef.current.dragging = false;
-  };
+  const onMouseUp = () => { if (dragRef.current) dragRef.current.dragging = false; };
 
-  const dist = (t: TouchList) =>
-    Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
-
+  const dist = (t: TouchList) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
   const onTouchStart = (e: React.TouchEvent<HTMLCanvasElement>) => {
     if (e.touches.length === 1) {
-      dragRef.current = {
-        dragging: true,
-        lastX: e.touches[0].clientX,
-        lastY: e.touches[0].clientY,
-      };
+      dragRef.current = { dragging: true, lastX: e.touches[0].clientX, lastY: e.touches[0].clientY };
     } else if (e.touches.length === 2) {
       pinchRef.current = { lastDist: dist(e.touches as unknown as TouchList) };
     }
@@ -157,24 +144,49 @@ export default function Food() {
       const d = dragRef.current;
       const dx = e.touches[0].clientX - d.lastX;
       const dy = e.touches[0].clientY - d.lastY;
-      d.lastX = e.touches[0].clientX;
-      d.lastY = e.touches[0].clientY;
+      d.lastX = e.touches[0].clientX; d.lastY = e.touches[0].clientY;
       setView((v) => ({ ...v, dx: v.dx + dx, dy: v.dy + dy }));
     } else if (e.touches.length === 2 && pinchRef.current) {
       const newDist = dist(e.touches as unknown as TouchList);
       const factor = newDist > pinchRef.current.lastDist ? 1.03 : 0.97;
       pinchRef.current.lastDist = newDist;
       const rect = (e.currentTarget as HTMLCanvasElement).getBoundingClientRect();
-      const cx =
-        (e.touches[0].clientX + e.touches[1].clientX) / 2 - rect.left;
-      const cy =
-        (e.touches[0].clientY + e.touches[1].clientY) / 2 - rect.top;
+      const cx = (e.touches[0].clientX + e.touches[1].clientX) / 2 - rect.left;
+      const cy = (e.touches[0].clientY + e.touches[1].clientY) / 2 - rect.top;
       zoomAt(cx, cy, factor);
     }
   };
-  const onTouchEnd = () => {
-    if (dragRef.current) dragRef.current.dragging = false;
-    pinchRef.current = null;
+  const onTouchEnd = () => { if (dragRef.current) dragRef.current.dragging = false; pinchRef.current = null; };
+
+  /* ---------------- backend call (NO client fallback) ---------------- */
+  const analyze = async () => {
+    if (!file) return;
+    setProcessing(true);
+    setResp(null);
+    setError(null);
+    setElapsedMs(null);
+    const t0 = performance.now();
+
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const r = await fetch(`${API}${ENDPOINT}`, {
+        method: "POST",
+        headers: { ...authHeader() },
+        body: fd,
+      });
+      if (!r.ok) {
+        const text = await r.text();
+        throw new Error(`HTTP ${r.status}: ${text}`);
+      }
+      const data: VehicleResponse = await r.json();
+      setResp(data);
+    } catch (e: any) {
+      setError(e?.message || "Request failed");
+    } finally {
+      setElapsedMs(Math.round(performance.now() - t0));
+      setProcessing(false);
+    }
   };
 
   const ZoomHUD: React.FC = () => {
@@ -188,71 +200,12 @@ export default function Food() {
     return (
       <div className="absolute right-2 top-2 z-10 select-none">
         <div className="flex items-center gap-2 rounded-md border bg-white/90 backdrop-blur px-2 py-1 shadow-sm">
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              centerZoom(0.9);
-            }}
-            className="h-6 w-6 grid place-items-center rounded hover:bg-muted text-sm"
-          >
-            −
-          </button>
-          <span className="text-xs w-[44px] text-center tabular-nums">
-            {Math.round(scale * 100)}%
-          </span>
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              centerZoom(1.1);
-            }}
-            className="h-6 w-6 grid place-items-center rounded hover:bg-muted text-sm"
-          >
-            +
-          </button>
+          <button onClick={(e) => { e.stopPropagation(); centerZoom(0.9); }} className="h-6 w-6 grid place-items-center rounded hover:bg-muted text-sm">−</button>
+          <span className="text-xs w-[44px] text-center tabular-nums">{Math.round(scale * 100)}%</span>
+          <button onClick={(e) => { e.stopPropagation(); centerZoom(1.1); }} className="h-6 w-6 grid place-items-center rounded hover:bg-muted text-sm">+</button>
         </div>
       </div>
     );
-  };
-
-  /* ---------------- backend call ---------------- */
-  const analyze = async () => {
-    if (!file) return;
-    setProcessing(true);
-    setResp(null);
-    setElapsedMs(null);
-    const t0 = performance.now();
-    try {
-      const fd = new FormData();
-      fd.append("file", file);
-      const r = await fetch(`${API}${ENDPOINT}`, {
-        method: "POST",
-        headers: { ...authHeader() },
-        body: fd,
-      });
-      const data: FoodResponse = await r.json();
-
-      const safe =
-        data && Array.isArray(data.classes) && data.classes.length
-          ? data
-          : {
-              image: { width: imgWH?.w || 640, height: imgWH?.h || 480 },
-              classes: [
-                { label: "Italian Cuisine", confidence: 0.95 },
-                { label: "Pasta", confidence: 0.88 },
-                { label: "Tomato Sauce", confidence: 0.82 },
-              ],
-            };
-
-      setResp(safe);
-    } catch {
-      setResp({
-        image: { width: imgWH?.w || 640, height: imgWH?.h || 480 },
-        classes: [{ label: "Italian Cuisine", confidence: 0.95 }],
-      });
-    } finally {
-      setElapsedMs(Math.round(performance.now() - t0));
-      setProcessing(false);
-    }
   };
 
   return (
@@ -266,7 +219,7 @@ export default function Food() {
         <h1 className="text-2xl font-bold">{title}</h1>
         <VisionModeSelect />
         <div className="ml-auto">
-          <Badge variant="secondary">Mode: Food</Badge>
+          <Badge variant="secondary">Mode: Vehicle</Badge>
         </div>
       </header>
 
@@ -318,12 +271,8 @@ export default function Food() {
           <CardContent>
             <Tabs defaultValue="results">
               <TabsList className="grid grid-cols-2 w-full h-9">
-                <TabsTrigger value="results" className="text-sm">
-                  Results
-                </TabsTrigger>
-                <TabsTrigger value="raw" className="text-sm">
-                  Raw Data
-                </TabsTrigger>
+                <TabsTrigger value="results" className="text-sm">Results</TabsTrigger>
+                <TabsTrigger value="raw" className="text-sm">Raw Data</TabsTrigger>
               </TabsList>
 
               <TabsContent value="results" className="space-y-3 mt-4">
@@ -331,30 +280,36 @@ export default function Food() {
                   Processing time: {elapsedMs !== null ? `${elapsedMs} ms` : "–"}
                 </div>
 
-                <div className="rounded-md border">
-                  <div className="grid grid-cols-2 px-3 py-2 text-xs text-muted-foreground border-b">
-                    <span>Label</span>
-                    <span>Confidence</span>
+                {error ? (
+                  <div className="rounded-md border px-3 py-4 text-sm text-red-600">
+                    {error}
                   </div>
-
-                  {resp?.classes?.length ? (
-                    resp.classes.map((c, i) => (
-                      <div key={i} className="grid grid-cols-2 px-3 py-2 text-sm">
-                        <span className="truncate">{c.label}</span>
-                        <span>{(c.confidence * 100).toFixed(1)}%</span>
-                      </div>
-                    ))
-                  ) : (
-                    <div className="px-3 py-4 text-sm text-muted-foreground">
-                      Upload an image and click Analyze.
+                ) : (
+                  <div className="rounded-md border">
+                    <div className="grid grid-cols-2 px-3 py-2 text-xs text-muted-foreground border-b">
+                      <span>Label</span>
+                      <span>Confidence</span>
                     </div>
-                  )}
-                </div>
+
+                    {resp?.classes?.length ? (
+                      resp.classes.map((c, i) => (
+                        <div key={i} className="grid grid-cols-2 px-3 py-2 text-sm">
+                          <span className="truncate">{c.label}</span>
+                          <span>{(c.confidence * 100).toFixed(1)}%</span>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="px-3 py-4 text-sm text-muted-foreground">
+                        {resp ? "No classes returned by server." : "Upload an image and click Analyze."}
+                      </div>
+                    )}
+                  </div>
+                )}
               </TabsContent>
 
               <TabsContent value="raw" className="mt-4">
                 <pre className="text-xs whitespace-pre-wrap text-muted-foreground">
-                  {JSON.stringify(resp ?? {}, null, 2)}
+                  {JSON.stringify(resp ?? (error ? { error } : {}), null, 2)}
                 </pre>
               </TabsContent>
             </Tabs>
