@@ -11,7 +11,7 @@ type PetClass = { label: string; confidence: number };
 type PetResponse = {
   image?: { width: number; height: number };
   classes: PetClass[];
-  // You can add any extra fields server-side (model, meta, etc.)
+  // extra fields from server will show in Raw tab
 };
 
 const API = import.meta.env.VITE_OFFLINE_API || "http://localhost:5001";
@@ -44,10 +44,17 @@ export default function PetClassification() {
   // refs
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null); // ✅ to clear file input
 
   // drag/pinch
   const dragRef = useRef<{ dragging: boolean; lastX: number; lastY: number } | null>(null);
   const pinchRef = useRef<{ lastDist: number } | null>(null);
+
+  const wipeCanvas = (c: HTMLCanvasElement | null) => {
+    if (!c) return;
+    const ctx = c.getContext("2d");
+    if (ctx) ctx.clearRect(0, 0, c.width, c.height);
+  };
 
   /* ---------------- file handling ---------------- */
   const onFile = (f: File | null) => {
@@ -59,6 +66,9 @@ export default function PetClassification() {
     if (!f) {
       setImgUrl(null);
       setImgWH(null);
+      // also blank canvas & drop in-memory image when clearing
+      wipeCanvas(canvasRef.current);
+      imgRef.current = null;
       return;
     }
     setImgUrl(URL.createObjectURL(f));
@@ -78,6 +88,16 @@ export default function PetClassification() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [imgUrl]);
+
+  // ✅ Fully clear page when sidebar "New Image" is clicked
+  useEffect(() => {
+    const handler = () => {
+      onFile(null);                 // resets state and wipes canvas
+      if (fileInputRef.current) fileInputRef.current.value = ""; // clear real input
+    };
+    window.addEventListener("vision:new", handler as any);
+    return () => window.removeEventListener("vision:new", handler as any);
+  }, []);
 
   /* ---------------- drawing ---------------- */
   const fitCanvasToParent = (cvs: HTMLCanvasElement, w: number, h: number) => {
@@ -176,7 +196,7 @@ export default function PetClassification() {
     pinchRef.current = null;
   };
 
-  /* ---------------- backend call (NO client fallback) ---------------- */
+  /* ---------------- backend call (server-only) ---------------- */
   const analyze = async () => {
     if (!file) return;
     setProcessing(true);
@@ -198,7 +218,7 @@ export default function PetClassification() {
         throw new Error(`HTTP ${r.status}: ${text}`);
       }
       const data: PetResponse = await r.json();
-      setResp(data); // <- only server response
+      setResp(data);
     } catch (e: any) {
       setError(e?.message || "Request failed");
     } finally {
@@ -243,11 +263,16 @@ export default function PetClassification() {
                 onTouchEnd={onTouchEnd}
               />
               <div className="mt-2 text-[11px] md:text-xs text-muted-foreground">
-                Scroll to zoom. Drag to pan. Pinch to zoom on touch devices.
+                Scroll to zoom. Drag to pan.
               </div>
             </div>
 
-            <Input type="file" accept="image/*" onChange={(e) => onFile(e.target.files?.[0] ?? null)} />
+            <Input
+              ref={fileInputRef}  // ✅ attach ref so we can clear it
+              type="file"
+              accept="image/*"
+              onChange={(e) => onFile(e.target.files?.[0] ?? null)}
+            />
 
             <div className="pt-1 flex justify-center">
               <Button

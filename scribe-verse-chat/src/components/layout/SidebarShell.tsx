@@ -1,10 +1,23 @@
+// src/components/layout/SidebarShell.tsx
 import { PropsWithChildren } from "react";
-import { Outlet } from "react-router-dom";
+import { Outlet, useLocation } from "react-router-dom";
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
 
+const NO_LAYOUT_SCROLL = [
+  /^\/chat\b/i,
+  /^\/chatbot\b/i,
+  /^\/home\b/i, // include if your chatbot is at /home
+];
+
+function usePageSkipsLayoutScroll() {
+  const { pathname } = useLocation();
+  return NO_LAYOUT_SCROLL.some((rx) => rx.test(pathname));
+}
+
 export default function SidebarShell({ children }: PropsWithChildren) {
-  // Use children if provided, otherwise render nested routes via Outlet
+  const skipLayoutScroll = usePageSkipsLayoutScroll();
+
   return (
     <SidebarProvider>
       <div className="min-h-screen flex w-full">
@@ -16,13 +29,23 @@ export default function SidebarShell({ children }: PropsWithChildren) {
           onRename={() => {}}
           onDelete={() => {}}
         />
+
         <div className="flex-1 flex flex-col min-w-0">
           <header className="h-12 flex items-center border-b px-2">
             <SidebarTrigger className="mr-2" />
-            {/* You can add breadcrumbs or a page title here if needed */}
           </header>
+
           <main className="flex-1 min-h-0">
-            {children ?? <Outlet />}
+            {skipLayoutScroll ? (
+              // Chatbot (or any route matched above): unchanged
+              children ?? <Outlet />
+            ) : (
+              // All other pages: make the page area scrollable
+              // 3rem = h-12 header; use dynamic viewport for mobile
+              <div className="h-[calc(100dvh-3rem)] overflow-auto min-h-0">
+                {children ?? <Outlet />}
+              </div>
+            )}
           </main>
         </div>
       </div>

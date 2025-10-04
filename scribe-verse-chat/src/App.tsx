@@ -11,6 +11,8 @@ import VisionVehicleClassification from "./pages/vision/vehicle-classification";
 import VisionPetDetection from "./pages/vision/pet-detection";
 import VisionPersonDetection from "./pages/vision/person-detection";
 import VisionVehicleDetection from "./pages/vision/vehicle-detection";
+import VisionFlowerClassification from "./pages/vision/flower-classification";
+import VisionFoodDetection from "./pages/vision/food-detection";
 
 // Core pages
 import Index from "./pages/Index";
@@ -29,9 +31,6 @@ import SidebarShell from "./components/layout/SidebarShell";
 import OCRBill from "./pages/ocr/Bill";
 import OCRBank from "./pages/ocr/Bank";
 
-// Vision demos (optional)
-import VisionFlower from "./pages/vision/Flower";
-import VisionFood from "./pages/vision/Food";
 
 const queryClient = new QueryClient();
 
@@ -62,8 +61,8 @@ const App = () => (
               <Route path="/ocr/bank" element={<OCRBank />} />
 
               {/* Vision demo (remove if not needed) */}
-              <Route path="/vision/flower" element={<VisionFlower />} />
-              <Route path="/vision/food" element={<VisionFood />} />
+              <Route path="/vision/flower-classification" element={<VisionFlowerClassification />} />
+              <Route path="/vision/food-detection" element={<VisionFoodDetection />} />
               <Route path="/vision/pet-classification" element={<VisionPetClassification />} />
               <Route path="/vision/person-classification" element={<VisionPersonClassification />} />
               <Route path="/vision/vehicle-classification" element={<VisionVehicleClassification />} />
@@ -74,7 +73,7 @@ const App = () => (
 
             {/* redirects */}
             <Route path="/ocr" element={<Navigate to="/ocr/bill" replace />} />
-            <Route path="/vision" element={<Navigate to="/vision/flower" replace />} />
+            <Route path="/vision" element={<Navigate to="/vision/flower-classification" replace />} />
 
             {/* 404 */}
             <Route path="*" element={<NotFound />} />

@@ -39,6 +39,9 @@ export default function PersonDetection() {
   const outRef = useRef<HTMLCanvasElement | null>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
 
+  // file input ref (to clear the selected file)
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
   // view state
   const [inView, setInView] = useState({ scale: 1, dx: 0, dy: 0 });
   const [outView, setOutView] = useState({ scale: 1, dx: 0, dy: 0 });
@@ -54,6 +57,12 @@ export default function PersonDetection() {
     });
   };
 
+  const wipeCanvas = (c: HTMLCanvasElement | null) => {
+    if (!c) return;
+    const ctx = c.getContext("2d");
+    if (ctx) ctx.clearRect(0, 0, c.width, c.height);
+  };
+
   const onFile = (f: File | null) => {
     setFile(f);
     setResp(null);
@@ -64,6 +73,10 @@ export default function PersonDetection() {
     if (!f) {
       setImgUrl(null);
       setImgWH(null);
+      // also blank canvases & drop in-memory image
+      wipeCanvas(inRef.current);
+      wipeCanvas(outRef.current);
+      imgRef.current = null;
       return;
     }
     setImgUrl(URL.createObjectURL(f));
@@ -84,6 +97,17 @@ export default function PersonDetection() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [imgUrl]);
+
+  // Clears the page when the sidebar "New Image" button is clicked
+  useEffect(() => {
+    const handler = () => {
+      onFile(null); // resets file/url + states and blanks canvases
+      // clear the actual <input type="file">
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    };
+    window.addEventListener("vision:new", handler as any);
+    return () => window.removeEventListener("vision:new", handler as any);
+  }, []);
 
   // fit canvas to its parent
   const fitCanvasToParent = (cvs: HTMLCanvasElement, w: number, h: number) => {
@@ -249,10 +273,15 @@ export default function PersonDetection() {
               </div>
             </div>
 
-            <Input type="file" accept="image/*" onChange={(e) => onFile(e.target.files?.[0] ?? null)} />
+            <Input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              onChange={(e) => onFile(e.target.files?.[0] ?? null)}
+            />
 
             <Button
-              className="w-full max-w-[220px] mx-auto"
+              className="block w-full max-w-[220px] mx-auto"
               disabled={!file || processing}
               onClick={analyze}
             >

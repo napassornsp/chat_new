@@ -38,6 +38,7 @@ export default function VehicleDetection() {
   const inRef = useRef<HTMLCanvasElement | null>(null);
   const outRef = useRef<HTMLCanvasElement | null>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // view state
   const [inView, setInView] = useState({ scale: 1, dx: 0, dy: 0 });
@@ -45,6 +46,12 @@ export default function VehicleDetection() {
 
   // helpers
   const clamp = (s: number) => Math.max(0.2, Math.min(5, s));
+  const wipeCanvas = (cvs: HTMLCanvasElement | null) => {
+    if (!cvs) return;
+    const ctx = cvs.getContext("2d");
+    if (ctx) ctx.clearRect(0, 0, cvs.width, cvs.height);
+  };
+
   const zoomAt = (which: "in" | "out", x: number, y: number, factor: number) => {
     const set = which === "in" ? setInView : setOutView;
     set((v) => {
@@ -61,9 +68,14 @@ export default function VehicleDetection() {
     setElapsed("–");
     setInView({ scale: 1, dx: 0, dy: 0 });
     setOutView({ scale: 1, dx: 0, dy: 0 });
+
     if (!f) {
       setImgUrl(null);
       setImgWH(null);
+      imgRef.current = null;
+      // wipe both canvases so no old pixels linger
+      wipeCanvas(inRef.current);
+      wipeCanvas(outRef.current);
       return;
     }
     setImgUrl(URL.createObjectURL(f));
@@ -77,13 +89,22 @@ export default function VehicleDetection() {
       imgRef.current = img;
       setImgWH({ w: img.width, h: img.height });
       drawInput();
+      drawOutput();
     };
     img.src = imgUrl;
-    return () => {
-      imgRef.current = null;
-    };
+    return () => { imgRef.current = null; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [imgUrl]);
+
+  // Respond to sidebar "New Image"
+  useEffect(() => {
+    const handler = () => {
+      onFile(null); // clears state and canvases
+      if (fileInputRef.current) fileInputRef.current.value = ""; // clear the actual file input
+    };
+    window.addEventListener("vision:new", handler as any);
+    return () => window.removeEventListener("vision:new", handler as any);
+  }, []);
 
   // fit canvas to its parent
   const fitCanvasToParent = (cvs: HTMLCanvasElement, w: number, h: number) => {
@@ -202,7 +223,7 @@ export default function VehicleDetection() {
         throw new Error(`HTTP ${r.status}: ${text}`);
       }
       const data: DetectResponse = await r.json();
-      setResp(data); // strictly backend data
+      setResp(data);
     } catch (e: any) {
       setError(e?.message || "Request failed");
     } finally {
@@ -249,10 +270,15 @@ export default function VehicleDetection() {
               </div>
             </div>
 
-            <Input type="file" accept="image/*" onChange={(e) => onFile(e.target.files?.[0] ?? null)} />
+            <Input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              onChange={(e) => onFile(e.target.files?.[0] ?? null)}
+            />
 
             <Button
-              className="w-full max-w-[220px] mx-auto"
+              className="block w-full max-w-[220px] mx-auto"
               disabled={!file || processing}
               onClick={analyze}
             >

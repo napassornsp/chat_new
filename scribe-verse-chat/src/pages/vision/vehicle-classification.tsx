@@ -11,7 +11,6 @@ type VehicleClass = { label: string; confidence: number };
 type VehicleResponse = {
   image?: { width: number; height: number };
   classes: VehicleClass[];
-  // any extra fields from backend (model, meta, etc.) will show in Raw tab
 };
 
 const API = import.meta.env.VITE_OFFLINE_API || "http://localhost:5001";
@@ -44,10 +43,17 @@ export default function VehicleClassification() {
   // refs
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // drag/pinch refs
   const dragRef = useRef<{ dragging: boolean; lastX: number; lastY: number } | null>(null);
   const pinchRef = useRef<{ lastDist: number } | null>(null);
+
+  const wipeCanvas = (c: HTMLCanvasElement | null) => {
+    if (!c) return;
+    const ctx = c.getContext("2d");
+    if (ctx) ctx.clearRect(0, 0, c.width, c.height);
+  };
 
   /* ---------------- file handling ---------------- */
   const onFile = (f: File | null) => {
@@ -56,9 +62,12 @@ export default function VehicleClassification() {
     setError(null);
     setElapsedMs(null);
     setView({ scale: 1, dx: 0, dy: 0 });
+
     if (!f) {
       setImgUrl(null);
       setImgWH(null);
+      imgRef.current = null;        // drop in-memory image
+      wipeCanvas(canvasRef.current); // clear canvas pixels
       return;
     }
     setImgUrl(URL.createObjectURL(f));
@@ -76,6 +85,16 @@ export default function VehicleClassification() {
     return () => { imgRef.current = null; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [imgUrl]);
+
+  // Respond to "New Image" from sidebar
+  useEffect(() => {
+    const handler = () => {
+      onFile(null);                               // clears state + canvas
+      if (fileInputRef.current) fileInputRef.current.value = ""; // clears actual input
+    };
+    window.addEventListener("vision:new", handler as any);
+    return () => window.removeEventListener("vision:new", handler as any);
+  }, []);
 
   /* ---------------- drawing ---------------- */
   const fitCanvasToParent = (cvs: HTMLCanvasElement, w: number, h: number) => {
@@ -158,7 +177,7 @@ export default function VehicleClassification() {
   };
   const onTouchEnd = () => { if (dragRef.current) dragRef.current.dragging = false; pinchRef.current = null; };
 
-  /* ---------------- backend call (NO client fallback) ---------------- */
+  /* ---------------- backend call ---------------- */
   const analyze = async () => {
     if (!file) return;
     setProcessing(true);
@@ -245,11 +264,16 @@ export default function VehicleClassification() {
                 onTouchEnd={onTouchEnd}
               />
               <div className="mt-2 text-[11px] md:text-xs text-muted-foreground">
-                Scroll to zoom. Drag to pan. Pinch to zoom on touch devices.
+                Scroll to zoom. Drag to pan.
               </div>
             </div>
 
-            <Input type="file" accept="image/*" onChange={(e) => onFile(e.target.files?.[0] ?? null)} />
+            <Input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              onChange={(e) => onFile(e.target.files?.[0] ?? null)}
+            />
 
             <div className="pt-1 flex justify-center">
               <Button

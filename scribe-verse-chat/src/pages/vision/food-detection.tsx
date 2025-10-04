@@ -42,6 +42,7 @@ export default function Food() {
   // refs
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null); // ✅ to clear <input type="file">
 
   // drag/pinch
   const dragRef = useRef<{ dragging: boolean; lastX: number; lastY: number } | null>(null);
@@ -56,6 +57,13 @@ export default function Food() {
     if (!f) {
       setImgUrl(null);
       setImgWH(null);
+      // also wipe canvas when clearing file manually
+      const cvs = canvasRef.current;
+      if (cvs) {
+        const ctx = cvs.getContext("2d");
+        if (ctx) ctx.clearRect(0, 0, cvs.width, cvs.height);
+      }
+      imgRef.current = null;
       return;
     }
     setImgUrl(URL.createObjectURL(f));
@@ -75,6 +83,32 @@ export default function Food() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [imgUrl]);
+
+  // ✅ Clears EVERYTHING when sidebar "New Image" is clicked
+  useEffect(() => {
+    const handler = () => {
+      // 1) reset React state
+      onFile(null);
+      setResp(null);
+      setElapsedMs(null);
+      setView({ scale: 1, dx: 0, dy: 0 });
+
+      // 2) clear the actual file input
+      if (fileInputRef.current) fileInputRef.current.value = "";
+
+      // 3) wipe canvas pixels
+      const cvs = canvasRef.current;
+      if (cvs) {
+        const ctx = cvs.getContext("2d");
+        if (ctx) ctx.clearRect(0, 0, cvs.width, cvs.height);
+      }
+
+      // 4) drop in-memory image
+      imgRef.current = null;
+    };
+    window.addEventListener("vision:new", handler as any);
+    return () => window.removeEventListener("vision:new", handler as any);
+  }, []);
 
   /* ---------------- drawing ---------------- */
   const fitCanvasToParent = (cvs: HTMLCanvasElement, w: number, h: number) => {
@@ -97,7 +131,6 @@ export default function Food() {
     ctx.save();
     ctx.translate(view.dx, view.dy);
     ctx.scale(view.scale, view.scale);
-    // IMPORTANT: draw at canvas/scale to avoid double-scaling
     ctx.drawImage(img, 0, 0, cvs.width / view.scale, cvs.height / view.scale);
     ctx.restore();
   };
@@ -165,10 +198,8 @@ export default function Food() {
       const factor = newDist > pinchRef.current.lastDist ? 1.03 : 0.97;
       pinchRef.current.lastDist = newDist;
       const rect = (e.currentTarget as HTMLCanvasElement).getBoundingClientRect();
-      const cx =
-        (e.touches[0].clientX + e.touches[1].clientX) / 2 - rect.left;
-      const cy =
-        (e.touches[0].clientY + e.touches[1].clientY) / 2 - rect.top;
+      const cx = (e.touches[0].clientX + e.touches[1].clientX) / 2 - rect.left;
+      const cy = (e.touches[0].clientY + e.touches[1].clientY) / 2 - rect.top;
       zoomAt(cx, cy, factor);
     }
   };
@@ -292,11 +323,16 @@ export default function Food() {
                 onTouchEnd={onTouchEnd}
               />
               <div className="mt-2 text-[11px] md:text-xs text-muted-foreground">
-                Scroll to zoom. Drag to pan. Pinch to zoom on touch devices.
+                Scroll to zoom. Drag to pan.
               </div>
             </div>
 
-            <Input type="file" accept="image/*" onChange={(e) => onFile(e.target.files?.[0] ?? null)} />
+            <Input
+              ref={fileInputRef}                 // ✅ so we can clear it
+              type="file"
+              accept="image/*"
+              onChange={(e) => onFile(e.target.files?.[0] ?? null)}
+            />
 
             <div className="pt-1 flex justify-center">
               <Button

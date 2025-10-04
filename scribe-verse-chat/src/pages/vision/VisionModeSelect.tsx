@@ -4,13 +4,13 @@ import { useLocation, useNavigate } from "react-router-dom";
 type Mode = { value: string; label: string; path: string };
 
 const MODES: Mode[] = [
-  { value: "flower",  label: "Flower Detection",      path: "/vision/flower" },
-  { value: "food",    label: "Food Classification",   path: "/vision/food" },
-  { value: "pet-cls", label: "Pet Classification",    path: "/vision/pet-classification" },
-  { value: "veh-cls", label: "Vehicle Classification",path: "/vision/vehicle-classification" },
+  { value: "flower-det",  label: "Flower Detection",      path: "/vision/flower-detection" },
   { value: "pet-det", label: "Pet Detection",         path: "/vision/pet-detection" },
   { value: "veh-det", label: "Vehicle Detection",     path: "/vision/vehicle-detection" },
   { value: "person-det",  label: "Person Detection",      path: "/vision/person-detection" },
+  { value: "food-cls",    label: "Food Classification",   path: "/vision/food-classification" },
+  { value: "pet-cls", label: "Pet Classification",    path: "/vision/pet-classification" },
+  { value: "veh-cls", label: "Vehicle Classification",path: "/vision/vehicle-classification" },
   { value: "person-cls",  label: "Person Classification",      path: "/vision/person-classification" },
 ];
 

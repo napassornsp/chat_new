@@ -46,6 +46,7 @@ export default function PersonClassification() {
   // refs
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null); // ✅ to clear file input
 
   // drag/pinch
   const dragRef = useRef<{ dragging: boolean; lastX: number; lastY: number } | null>(null);
@@ -61,6 +62,13 @@ export default function PersonClassification() {
     if (!f) {
       setImgUrl(null);
       setImgWH(null);
+      // also wipe canvas when clearing file manually
+      const cvs = canvasRef.current;
+      if (cvs) {
+        const ctx = cvs.getContext("2d");
+        if (ctx) ctx.clearRect(0, 0, cvs.width, cvs.height);
+      }
+      imgRef.current = null;
       return;
     }
     setImgUrl(URL.createObjectURL(f));
@@ -80,6 +88,33 @@ export default function PersonClassification() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [imgUrl]);
+
+  // ✅ Clears EVERYTHING when sidebar "New Image" is clicked
+  useEffect(() => {
+    const handler = () => {
+      // 1) reset React state
+      onFile(null);
+      setResp(null);
+      setError(null);
+      setElapsedMs(null);
+      setView({ scale: 1, dx: 0, dy: 0 });
+
+      // 2) clear the actual file input
+      if (fileInputRef.current) fileInputRef.current.value = "";
+
+      // 3) wipe canvas pixels
+      const cvs = canvasRef.current;
+      if (cvs) {
+        const ctx = cvs.getContext("2d");
+        if (ctx) ctx.clearRect(0, 0, cvs.width, cvs.height);
+      }
+
+      // 4) drop in-memory image
+      imgRef.current = null;
+    };
+    window.addEventListener("vision:new", handler as any);
+    return () => window.removeEventListener("vision:new", handler as any);
+  }, []);
 
   /* ---------------- drawing ---------------- */
   const fitCanvasToParent = (cvs: HTMLCanvasElement, w: number, h: number) => {
@@ -279,7 +314,12 @@ export default function PersonClassification() {
               </div>
             </div>
 
-            <Input type="file" accept="image/*" onChange={(e) => onFile(e.target.files?.[0] ?? null)} />
+            <Input
+              ref={fileInputRef}   // ✅ attach ref so we can clear it
+              type="file"
+              accept="image/*"
+              onChange={(e) => onFile(e.target.files?.[0] ?? null)}
+            />
 
             <div className="pt-1 flex justify-center">
               <Button

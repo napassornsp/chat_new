@@ -39,6 +39,9 @@ export default function PetDetection() {
   const outRef = useRef<HTMLCanvasElement | null>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
 
+  // file input (so we can clear the actual chosen file)
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
   // view state
   const [inView, setInView] = useState({ scale: 1, dx: 0, dy: 0 });
   const [outView, setOutView] = useState({ scale: 1, dx: 0, dy: 0 });
@@ -54,6 +57,12 @@ export default function PetDetection() {
     });
   };
 
+  const wipeCanvas = (c: HTMLCanvasElement | null) => {
+    if (!c) return;
+    const ctx = c.getContext("2d");
+    if (ctx) ctx.clearRect(0, 0, c.width, c.height);
+  };
+
   const onFile = (f: File | null) => {
     setFile(f);
     setResp(null);
@@ -61,9 +70,17 @@ export default function PetDetection() {
     setElapsed("–");
     setInView({ scale: 1, dx: 0, dy: 0 });
     setOutView({ scale: 1, dx: 0, dy: 0 });
+
     if (!f) {
+      // clear image state
       setImgUrl(null);
       setImgWH(null);
+      imgRef.current = null;
+
+      // clear canvases (no stale pixels)
+      wipeCanvas(inRef.current);
+      wipeCanvas(outRef.current);
+
       return;
     }
     setImgUrl(URL.createObjectURL(f));
@@ -84,6 +101,16 @@ export default function PetDetection() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [imgUrl]);
+
+  // Clears the page when the sidebar "New Image" button is clicked
+  useEffect(() => {
+    const handler = () => {
+      onFile(null); // resets state and wipes canvases
+      if (fileInputRef.current) fileInputRef.current.value = ""; // clear the real <input>
+    };
+    window.addEventListener("vision:new", handler as any);
+    return () => window.removeEventListener("vision:new", handler as any);
+  }, []);
 
   // fit canvas to its parent
   const fitCanvasToParent = (cvs: HTMLCanvasElement, w: number, h: number) => {
@@ -177,7 +204,7 @@ export default function PetDetection() {
             className="h-6 w-6 grid place-items-center rounded hover:bg-muted text-sm">−</button>
           <span className="text-xs w-[44px] text-center tabular-nums">{Math.round(scale * 100)}%</span>
           <button onClick={(e) => { e.stopPropagation(); const c = center(); zoomAt(which, c.x, c.y, 1.1); }}
-            className="h-6 w-6 grid place-items-center rounded hover:bg-muted text-sm">+</button>
+            className="h-6 w-6 grid place-items-center rounded hover:bgMuted text-sm">+</button>
         </div>
       </div>
     );
@@ -249,10 +276,15 @@ export default function PetDetection() {
               </div>
             </div>
 
-            <Input type="file" accept="image/*" onChange={(e) => onFile(e.target.files?.[0] ?? null)} />
+            <Input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              onChange={(e) => onFile(e.target.files?.[0] ?? null)}
+            />
 
             <Button
-              className="w-full max-w-[220px] mx-auto"
+              className="block w-full max-w-[220px] mx-auto"
               disabled={!file || processing}
               onClick={analyze}
             >

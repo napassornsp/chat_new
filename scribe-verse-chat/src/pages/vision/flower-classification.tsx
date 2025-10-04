@@ -39,6 +39,9 @@ export default function FlowerDetection() {
   const outRef = useRef<HTMLCanvasElement | null>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
 
+  // file input ref (so we can clear the chosen file)
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
   // view state
   const [inView, setInView] = useState({ scale: 1, dx: 0, dy: 0 });
   const [outView, setOutView] = useState({ scale: 1, dx: 0, dy: 0 });
@@ -68,6 +71,37 @@ export default function FlowerDetection() {
     }
     setImgUrl(URL.createObjectURL(f));
   };
+
+  // 👉 Clears the whole page when the sidebar "New Image" button is clicked
+  useEffect(() => {
+    const handler = () => {
+      // 1) clear React state
+      onFile(null); // this resets file, imgUrl, imgWH and view states above
+      setResp(null);
+      setError(null);
+      setElapsed("–");
+      setInView({ scale: 1, dx: 0, dy: 0 });
+      setOutView({ scale: 1, dx: 0, dy: 0 });
+
+      // 2) clear the actual <input type="file">
+      if (fileInputRef.current) fileInputRef.current.value = "";
+
+      // 3) wipe both canvases so no old pixels remain
+      const wipe = (c: HTMLCanvasElement | null) => {
+        if (!c) return;
+        const ctx = c.getContext("2d");
+        if (ctx) ctx.clearRect(0, 0, c.width, c.height);
+      };
+      wipe(inRef.current);
+      wipe(outRef.current);
+
+      // 4) drop the in-memory image handle
+      imgRef.current = null;
+    };
+
+    window.addEventListener("vision:new", handler as any);
+    return () => window.removeEventListener("vision:new", handler as any);
+  }, []);
 
   // load image
   useEffect(() => {
@@ -250,10 +284,15 @@ export default function FlowerDetection() {
               </div>
             </div>
 
-            <Input type="file" accept="image/*" onChange={(e) => onFile(e.target.files?.[0] ?? null)} />
+            <Input
+              ref={fileInputRef}                              
+              type="file"
+              accept="image/*"
+              onChange={(e) => onFile(e.target.files?.[0] ?? null)}
+            />
 
             <Button
-              className="w-full max-w-[220px] mx-auto"
+              className="block w-full max-w-[220px] mx-auto"
               disabled={!file || processing}
               onClick={analyze}
             >

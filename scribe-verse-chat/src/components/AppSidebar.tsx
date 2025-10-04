@@ -1,4 +1,3 @@
-// src/components/AppSidebar.tsx
 import { useEffect, useMemo, useState } from "react";
 import {
   Sidebar,
@@ -88,25 +87,20 @@ export function AppSidebar({
   const { state, toggleSidebar } = useSidebar();
   const collapsed = state === "collapsed";
   const location = useLocation();
+
+  // ---- route flags: WHICH module are we in? ----
   const isOcr = location.pathname.startsWith("/ocr");
+  const isVision = location.pathname.startsWith("/vision");
+  const isChatbot = !isOcr && !isVision;
 
   /* --------------------------- OCR history state --------------------------- */
   const [ocrItems, setOcrItems] = useState<OcrItem[]>([]);
 
   const loadOcr = async () => {
     try {
-      // pull both tables and merge newest-first
       const [bills, banks] = await Promise.all([
-        selectTable<any>("ocr_bill_extractions", {
-          _order_col: "created_at",
-          _order_asc: "0",
-          _limit: "50",
-        }),
-        selectTable<any>("ocr_bank_extractions", {
-          _order_col: "created_at",
-          _order_asc: "0",
-          _limit: "50",
-        }),
+        selectTable<any>("ocr_bill_extractions", { _order_col: "created_at", _order_asc: "0", _limit: "50" }),
+        selectTable<any>("ocr_bank_extractions", { _order_col: "created_at", _order_asc: "0", _limit: "50" }),
       ]);
 
       const billItems: OcrItem[] = (bills ?? []).map((b: any) => ({
@@ -140,7 +134,6 @@ export function AppSidebar({
     if (!isOcr) return;
     loadOcr();
     const onRefresh = () => loadOcr();
-    // refresh when pages say so
     window.addEventListener("ocr:refresh" as any, onRefresh as any);
     return () => window.removeEventListener("ocr:refresh" as any, onRefresh as any);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -218,6 +211,7 @@ export function AppSidebar({
             <SidebarMenu>
               <SidebarMenuItem key="menu-chatbot">
                 <SidebarMenuButton
+                  isActive={isChatbot}
                   tooltip={{ children: "Chatbot", hidden: false }}
                   className="overflow-hidden"
                   onClick={() => {
@@ -229,9 +223,9 @@ export function AppSidebar({
                 </SidebarMenuButton>
               </SidebarMenuItem>
 
-              {/* Single OCR entry now (no Bill/Bank links here) */}
               <SidebarMenuItem key="menu-ocr">
                 <SidebarMenuButton
+                  isActive={isOcr}
                   tooltip={{ children: "OCR", hidden: false }}
                   className="overflow-hidden"
                   onClick={() => {
@@ -245,10 +239,11 @@ export function AppSidebar({
 
               <SidebarMenuItem key="menu-vision">
                 <SidebarMenuButton
+                  isActive={isVision}
                   tooltip={{ children: "Vision AI", hidden: false }}
                   className="overflow-hidden"
                   onClick={() => {
-                    if (!location.pathname.startsWith("/vision")) window.location.href = "/vision/flower";
+                    if (!location.pathname.startsWith("/vision")) window.location.href = "/vision/flower-classification";
                   }}
                 >
                   <Eye className="h-4 w-4" />
@@ -268,15 +263,24 @@ export function AppSidebar({
                   onClick={() => {
                     if (isOcr) {
                       window.dispatchEvent(new CustomEvent("ocr:new"));
+                    } else if (isVision) {
+                      window.dispatchEvent(new CustomEvent("vision:new"));
                     } else {
                       onNewChat();
                     }
                   }}
-                  tooltip={{ children: isOcr ? "New OCR" : "New Chat", hidden: false }}
+                  tooltip={{
+                    children: isOcr ? "New OCR" : isVision ? "New Image" : "New Chat",
+                    hidden: false,
+                  }}
                   className="overflow-hidden bg-gradient-to-r from-primary to-accent text-primary-foreground hover:brightness-110"
                 >
                   <Plus className="h-4 w-4" />
-                  {!collapsed && <span className="font-medium">{isOcr ? "New OCR" : "New Chat"}</span>}
+                  {!collapsed && (
+                    <span className="font-medium">
+                      {isOcr ? "New OCR" : isVision ? "New Image" : "New Chat"}
+                    </span>
+                  )}
                 </SidebarMenuButton>
               </SidebarMenuItem>
             </SidebarMenu>
@@ -315,10 +319,7 @@ export function AppSidebar({
                             {item.filename || (item.type === "bill" ? "Bill" : "Bank")}
                           </span>
                           {item.approved && (
-                            <CheckCircle2
-                              className="ml-1 h-4 w-4 text-green-600 dark:text-green-400"
-                              aria-label="Approved"
-                            />
+                            <CheckCircle2 className="ml-1 h-4 w-4 text-green-600 dark:text-green-400" aria-label="Approved" />
                           )}
                           <Badge variant="outline" className="ml-auto capitalize">
                             {item.type}
@@ -333,167 +334,56 @@ export function AppSidebar({
           </SidebarGroup>
         )}
 
-        {/* ---------- Chat History (only when NOT on OCR pages) ---------- */}
-        {!collapsed && !isOcr && (
+        {/* ---------- Chat History (only on Chatbot pages) ---------- */}
+        {!collapsed && isChatbot && (
           <SidebarGroup className="min-h-0 flex-1 overflow-hidden">
             <SidebarGroupLabel>History</SidebarGroupLabel>
             <SidebarGroupContent>
               <div className="min-h-0 max-h-full overflow-y-auto pr-1">
-                {groups.recent.length > 0 && (
-                  <div className="mb-2">
-                    <div className="px-2 py-1 text-xs text-muted-foreground uppercase tracking-wide">Recently</div>
-                    <SidebarMenu>
-                      {groups.recent.map((chat, idx) => (
-                        <SidebarMenuItem key={chatKey(chat, idx)}>
-                          <SidebarMenuButton
-                            isActive={activeId === chatIdStr(chat.id)}
-                            onClick={() => onSelect(chatIdStr(chat.id))}
-                            tooltip={{ children: chat.title, hidden: false }}
-                            className="overflow-hidden"
-                          >
-                            <MessageSquare className="h-4 w-4" />
-                            <span className="truncate">{chat.title}</span>
-                          </SidebarMenuButton>
-                          <DropdownMenu>
-                            <DropdownMenuTrigger asChild>
-                              <SidebarMenuAction aria-label="Chat actions">…</SidebarMenuAction>
-                            </DropdownMenuTrigger>
-                            <DropdownMenuContent align="end" className="z-50">
-                              <DropdownMenuItem
-                                onClick={() => {
-                                  const name = window.prompt("Rename chat", chat.title);
-                                  if (name) onRename(chatIdStr(chat.id), name);
-                                }}
-                              >
-                                Rename
-                              </DropdownMenuItem>
-                              <DropdownMenuItem onClick={() => onDelete(chatIdStr(chat.id))}>
-                                Delete
-                              </DropdownMenuItem>
-                            </DropdownMenuContent>
-                          </DropdownMenu>
-                        </SidebarMenuItem>
-                      ))}
-                    </SidebarMenu>
-                  </div>
-                )}
-
-                {groups.last7.length > 0 && (
-                  <div className="mb-2">
-                    <div className="px-2 py-1 text-xs text-muted-foreground uppercase tracking-wide">Last 7 Days</div>
-                    <SidebarMenu>
-                      {groups.last7.map((chat, idx) => (
-                        <SidebarMenuItem key={chatKey(chat, idx)}>
-                          <SidebarMenuButton
-                            isActive={activeId === chatIdStr(chat.id)}
-                            onClick={() => onSelect(chatIdStr(chat.id))}
-                            tooltip={{ children: chat.title, hidden: false }}
-                            className="overflow-hidden"
-                          >
-                            <MessageSquare className="h-4 w-4" />
-                            <span className="truncate">{chat.title}</span>
-                          </SidebarMenuButton>
-                          <DropdownMenu>
-                            <DropdownMenuTrigger asChild>
-                              <SidebarMenuAction aria-label="Chat actions">…</SidebarMenuAction>
-                            </DropdownMenuTrigger>
-                            <DropdownMenuContent align="end" className="z-50">
-                              <DropdownMenuItem
-                                onClick={() => {
-                                  const name = window.prompt("Rename chat", chat.title);
-                                  if (name) onRename(chatIdStr(chat.id), name);
-                                }}
-                              >
-                                Rename
-                              </DropdownMenuItem>
-                              <DropdownMenuItem onClick={() => onDelete(chatIdStr(chat.id))}>
-                                Delete
-                              </DropdownMenuItem>
-                            </DropdownMenuContent>
-                          </DropdownMenu>
-                        </SidebarMenuItem>
-                      ))}
-                    </SidebarMenu>
-                  </div>
-                )}
-
-                {groups.last30.length > 0 && (
-                  <div className="mb-2">
-                    <div className="px-2 py-1 text-xs text-muted-foreground uppercase tracking-wide">Last 30 Days</div>
-                    <SidebarMenu>
-                      {groups.last30.map((chat, idx) => (
-                        <SidebarMenuItem key={chatKey(chat, idx)}>
-                          <SidebarMenuButton
-                            isActive={activeId === chatIdStr(chat.id)}
-                            onClick={() => onSelect(chatIdStr(chat.id))}
-                            tooltip={{ children: chat.title, hidden: false }}
-                            className="overflow-hidden"
-                          >
-                            <MessageSquare className="h-4 w-4" />
-                            <span className="truncate">{chat.title}</span>
-                          </SidebarMenuButton>
-                          <DropdownMenu>
-                            <DropdownMenuTrigger asChild>
-                              <SidebarMenuAction aria-label="Chat actions">…</SidebarMenuAction>
-                            </DropdownMenuTrigger>
-                            <DropdownMenuContent align="end" className="z-50">
-                              <DropdownMenuItem
-                                onClick={() => {
-                                  const name = window.prompt("Rename chat", chat.title);
-                                  if (name) onRename(chatIdStr(chat.id), name);
-                                }}
-                              >
-                                Rename
-                              </DropdownMenuItem>
-                              <DropdownMenuItem onClick={() => onDelete(chatIdStr(chat.id))}>
-                                Delete
-                              </DropdownMenuItem>
-                            </DropdownMenuContent>
-                          </DropdownMenu>
-                        </SidebarMenuItem>
-                      ))}
-                    </SidebarMenu>
-                  </div>
-                )}
-
-                {groups.older.length > 0 && (
-                  <div className="mb-2">
-                    <div className="px-2 py-1 text-xs text-muted-foreground uppercase tracking-wide">Older</div>
-                    <SidebarMenu>
-                      {groups.older.map((chat, idx) => (
-                        <SidebarMenuItem key={chatKey(chat, idx)}>
-                          <SidebarMenuButton
-                            isActive={activeId === chatIdStr(chat.id)}
-                            onClick={() => onSelect(chatIdStr(chat.id))}
-                            tooltip={{ children: chat.title, hidden: false }}
-                            className="overflow-hidden"
-                          >
-                            <MessageSquare className="h-4 w-4" />
-                            <span className="truncate">{chat.title}</span>
-                          </SidebarMenuButton>
-                          <DropdownMenu>
-                            <DropdownMenuTrigger asChild>
-                              <SidebarMenuAction aria-label="Chat actions">…</SidebarMenuAction>
-                            </DropdownMenuTrigger>
-                            <DropdownMenuContent align="end" className="z-50">
-                              <DropdownMenuItem
-                                onClick={() => {
-                                  const name = window.prompt("Rename chat", chat.title);
-                                  if (name) onRename(chatIdStr(chat.id), name);
-                                }}
-                              >
-                                Rename
-                              </DropdownMenuItem>
-                              <DropdownMenuItem onClick={() => onDelete(chatIdStr(chat.id))}>
-                                Delete
-                              </DropdownMenuItem>
-                            </DropdownMenuContent>
-                          </DropdownMenu>
-                        </SidebarMenuItem>
-                      ))}
-                    </SidebarMenu>
-                  </div>
-                )}
+                {["recent", "last7", "last30", "older"].map((bucket) => {
+                  const label =
+                    bucket === "recent" ? "Recently" : bucket === "last7" ? "Last 7 Days" : bucket === "last30" ? "Last 30 Days" : "Older";
+                  const list = (groups as any)[bucket] as Chat[];
+                  if (!list?.length) return null;
+                  return (
+                    <div className="mb-2" key={bucket}>
+                      <div className="px-2 py-1 text-xs text-muted-foreground uppercase tracking-wide">{label}</div>
+                      <SidebarMenu>
+                        {list.map((chat, idx) => (
+                          <SidebarMenuItem key={chatKey(chat, idx)}>
+                            <SidebarMenuButton
+                              isActive={activeId === chatIdStr(chat.id)}
+                              onClick={() => onSelect(chatIdStr(chat.id))}
+                              tooltip={{ children: chat.title, hidden: false }}
+                              className="overflow-hidden"
+                            >
+                              <MessageSquare className="h-4 w-4" />
+                              <span className="truncate">{chat.title}</span>
+                            </SidebarMenuButton>
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <SidebarMenuAction aria-label="Chat actions">…</SidebarMenuAction>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="end" className="z-50">
+                                <DropdownMenuItem
+                                  onClick={() => {
+                                    const name = window.prompt("Rename chat", chat.title);
+                                    if (name) onRename(chatIdStr(chat.id), name);
+                                  }}
+                                >
+                                  Rename
+                                </DropdownMenuItem>
+                                <DropdownMenuItem onClick={() => onDelete(chatIdStr(chat.id))}>
+                                  Delete
+                                </DropdownMenuItem>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
+                          </SidebarMenuItem>
+                        ))}
+                      </SidebarMenu>
+                    </div>
+                  );
+                })}
               </div>
             </SidebarGroupContent>
           </SidebarGroup>
@@ -509,10 +399,7 @@ export function AppSidebar({
                     <PopoverTrigger asChild>
                       <SidebarMenuButton
                         tooltip={{ children: "Profile", hidden: false }}
-                        className={[
-                          "overflow-hidden",
-                          collapsed ? "h-10 w-10 justify-center -translate-x-1" : "justify-start",
-                        ].join(" ")}
+                        className={["overflow-hidden", collapsed ? "h-10 w-10 justify-center -translate-x-1" : "justify-start"].join(" ")}
                       >
                         <div className="relative">
                           <User className="h-4 w-4" />
