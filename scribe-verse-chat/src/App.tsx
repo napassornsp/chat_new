@@ -5,6 +5,8 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { HelmetProvider } from "react-helmet-async";
+
+// Vision demos
 import VisionPetClassification from "./pages/vision/pet-classification";
 import VisionPersonClassification from "./pages/vision/person-classification";
 import VisionVehicleClassification from "./pages/vision/vehicle-classification";
@@ -22,15 +24,13 @@ import Home from "./pages/Home";
 import Notifications from "./pages/Notifications";
 import Help from "./pages/Help";
 import Profile from "./pages/Profile";
-import Pricing from "./pages/Pricing";
 
-// Layout
+// Layout (✅ default import)
 import SidebarShell from "./components/layout/SidebarShell";
 
-// ✅ OCR pages to keep
+// OCR pages
 import OCRBill from "./pages/ocr/Bill";
 import OCRBank from "./pages/ocr/Bank";
-
 
 const queryClient = new QueryClient();
 
@@ -54,13 +54,12 @@ const App = () => (
               <Route path="/notifications" element={<Notifications />} />
               <Route path="/help" element={<Help />} />
               <Route path="/profile" element={<Profile />} />
-              <Route path="/pricing" element={<Pricing />} />
 
               {/* OCR — only Bill & Bank */}
               <Route path="/ocr/bill" element={<OCRBill />} />
               <Route path="/ocr/bank" element={<OCRBank />} />
 
-              {/* Vision demo (remove if not needed) */}
+              {/* Vision demo */}
               <Route path="/vision/flower-classification" element={<VisionFlowerClassification />} />
               <Route path="/vision/food-detection" element={<VisionFoodDetection />} />
               <Route path="/vision/pet-classification" element={<VisionPetClassification />} />

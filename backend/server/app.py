@@ -1,6 +1,6 @@
 # backend/server/app.py
 import os, secrets, json
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from flask import Flask, request, jsonify, make_response, g, abort
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
@@ -14,7 +14,6 @@ try:
     from PIL import Image
 except Exception:  # Pillow not installed
     Image = None
-
 
 DB_URL = os.environ.get("OFFLINE_DB_URL", "sqlite:///offline.db")
 SECRET = os.environ.get("OFFLINE_SECRET", "dev-secret")
@@ -409,6 +408,10 @@ def ser(o):
     if "metadata_json" in d and "data" not in d:
         d["data"] = d.pop("metadata_json")
 
+    # notifications: expose 'unread'
+    if "read_at" in d:
+        d["unread"] = d["read_at"] in (None, "", "null")
+
     return d
 
 
@@ -610,17 +613,154 @@ def _ensure_user(
     db.session.commit()
     return u
 
+def _seed_notifications_for_user(user_id: int):
+    existing = Notification.query.filter_by(user_id=user_id).count()
+    if existing > 0:
+        return
+    now = datetime.utcnow()
+    samples = [
+        Notification(
+            user_id=user_id,
+            title="Welcome!",
+            body="Thanks for joining JV System. Explore Chatbot, OCR and Vision AI from the sidebar.",
+            created_at=now - timedelta(days=3),
+        ),
+        Notification(
+            user_id=user_id,
+            title="Your monthly counters were reset",
+            body="Your chat/OCR counters were reset for the new billing cycle.",
+            created_at=now - timedelta(days=2),
+            read_at=now - timedelta(days=1, hours=20),
+        ),
+        Notification(
+            user_id=user_id,
+            title="Credit reminder",
+            body="Heads up: you’ve used 80% of your Chat credits this month.",
+            created_at=now - timedelta(hours=30),
+        ),
+        Notification(
+            user_id=user_id,
+            title="New promotion",
+            body="Upgrade to Plus and get 20% off your first month. Contact sales from the Profile menu.",
+            created_at=now - timedelta(hours=8),
+        ),
+    ]
+    for n in samples:
+        db.session.add(n)
+    db.session.commit()
+
+@app.get("/notifications/count")
+def notifications_count():
+    """Return total and unread counts for the current user."""
+    current_user_required()
+    total = Notification.query.filter_by(user_id=g.user.id).count()
+    unread = Notification.query.filter_by(user_id=g.user.id, read_at=None).count()
+    return jsonify({"total": total, "unread": unread})
+
+def _require_admin():
+    # very light check: plan == 'admin'
+    u = current_user_required()
+    uc = db.session.get(UserCredit, u.id)
+    if not uc or (uc.plan or "free").lower() != "admin":
+        abort(403)
+    return u
+
+
+@app.post("/admin/notify")
+def admin_notify():
+    """
+    Admin-only broadcast/targeted notification.
+    Body example:
+    {
+      "title": "Promo",
+      "body": "20% off this month",
+      "user_ids": [2,3],      # optional
+      "plan": "plus"          # optional, one of: free|plus|business|admin
+    }
+    If neither user_ids nor plan are provided, notifies *all* users.
+    """
+    _require_admin()
+    data = request.get_json(silent=True) or {}
+    title = (data.get("title") or "").strip()
+    body = (data.get("body") or "").strip()
+    if not title:
+        return jsonify({"error": "missing_title"}), 400
+
+    user_ids = data.get("user_ids") or []
+    plan = (data.get("plan") or "").strip().lower() or None
+
+    q = User.query
+    if user_ids:
+        q = q.filter(User.id.in_(user_ids))
+    elif plan:
+        q = q.join(UserCredit, UserCredit.id == User.id).filter((UserCredit.plan or "free") == plan)
+    # else: all users
+
+    targets = q.all()
+    if not targets:
+        return jsonify({"ok": True, "created": 0})
+
+    now = datetime.utcnow()
+    for u in targets:
+        db.session.add(Notification(user_id=u.id, title=title, body=body, created_at=now))
+    db.session.commit()
+    return jsonify({"ok": True, "created": len(targets)})
+
+
+
+def ensure_baseline_notifications(user_id: int):
+    """
+    Guarantee a 'Welcome!' exists for the user, and add a couple of
+    useful samples if the user has zero notifications.
+    Safe to call multiple times.
+    """
+    has_any = Notification.query.filter_by(user_id=user_id).count() > 0
+    has_welcome = Notification.query.filter_by(user_id=user_id, title="Welcome!").count() > 0
+
+    if not has_welcome:
+        db.session.add(Notification(
+            user_id=user_id,
+            title="Welcome!",
+            body="Thanks for joining JV System. Explore Chatbot, OCR and Vision AI from the sidebar."
+        ))
+        db.session.commit()
+        has_any = True
+
+    if not has_any:
+        # add a couple of extras only if totally empty
+        now = datetime.utcnow()
+        db.session.add_all([
+            Notification(
+                user_id=user_id,
+                title="Getting started",
+                body="Tip: open the sidebar → Chatbot to start a conversation.",
+                created_at=now - timedelta(hours=6),
+            ),
+            Notification(
+                user_id=user_id,
+                title="What’s new",
+                body="Vision AI now supports quick defect tagging. Try it from the Vision module.",
+                created_at=now - timedelta(hours=3),
+            ),
+        ])
+        db.session.commit()
+
+
 def seed():
     db.create_all()
     auto_migrate()
     # Admin (unlimited)
-    _ensure_user("admin@example.com", "Admin", password="admin123", plan="admin", first_chat_title="Welcome")
+    admin = _ensure_user("admin@example.com", "Admin", password="admin123", plan="admin", first_chat_title="Welcome")
     # Free
-    _ensure_user("free@example.com", "Free User", password="free123", plan="free", first_chat_title="Welcome")
+    free = _ensure_user("free@example.com", "Free User", password="free123", plan="free", first_chat_title="Welcome")
     # Plus
-    _ensure_user("plus@example.com", "Plus User", password="plus123", plan="plus", first_chat_title="Welcome")
+    plus = _ensure_user("plus@example.com", "Plus User", password="plus123", plan="plus", first_chat_title="Welcome")
     # Business (contract-based by default; you can set per-user overrides later)
-    _ensure_user("business@example.com", "Business User", password="biz123", plan="business", first_chat_title="Welcome")
+    biz = _ensure_user("business@example.com", "Business User", password="biz123", plan="business", first_chat_title="Welcome")
+
+    # Seed a few notifications for each demo user
+    for u in (admin, free, plus, biz):
+        _seed_notifications_for_user(u.id)
 
 
 # ---------- Health ----------
@@ -660,6 +800,7 @@ def signup():
     db.session.add(Profile(id=u.id, full_name=u.name))
     db.session.add(UserCredit(id=u.id, plan="free", last_reset_at=now_ym()))
     db.session.commit()
+    ensure_baseline_notifications(u.id)
     tok = secrets.token_hex(24)
     db.session.add(Session(token=tok, user_id=u.id)); db.session.commit()
     return jsonify({"user": u.to_dict(include_profile=True), "session": {"access_token": tok}})
@@ -863,6 +1004,7 @@ def vision_ocr_bill():
         "currency": "THB", "sub_total": 0, "vat_percent": 7, "vat_amount": 0,
         "total_due_amount": 0, "table": [],
     }
+    # ✅ remove the stray "}" before the final ")"
     return jsonify({"data": {"fields": fields, "filename": filename}, "credits": credits_payload(row)})
 
 @app.post("/vision/ocr/bank")
@@ -877,7 +1019,6 @@ def vision_ocr_bank():
         "opening_balance": 0, "closing_balance": 0, "table": [],
     }
     return jsonify({"data": {"fields": fields, "filename": filename}, "credits": credits_payload(row)})
-
 
 # ---------- OCR: unified history ----------
 @app.get("/ocr/history")
@@ -901,15 +1042,60 @@ def ocr_history():
     return jsonify({"rows": items})
 
 
-# ---------- Notifications (scoped) ----------
+# ---------- Notifications (scoped + paginated) ----------
+@app.get("/notifications")
+def notifications_list():
+    """List notifications for the current user with filters and pagination."""
+    current_user_required()
+    ensure_baseline_notifications(g.user.id)
+    status = (request.args.get("status") or "all").lower()
+    try:
+        limit = max(1, min(100, int(request.args.get("limit", 20))))
+    except Exception:
+        limit = 20
+    try:
+        offset = max(0, int(request.args.get("offset", 0)))
+    except Exception:
+        offset = 0
+
+    q = Notification.query.filter_by(user_id=g.user.id)
+
+    if status == "unread":
+        q = q.filter(Notification.read_at.is_(None))
+    elif status == "read":
+        q = q.filter(Notification.read_at.is_not(None))
+
+    q = q.order_by(Notification.created_at.desc())
+    rows = q.offset(offset).limit(limit).all()
+    return jsonify({"rows": [ser(r) for r in rows]})
+
+
+@app.post("/notifications/mark_read")
+def notifications_mark_read():
+    """Mark a notification as read for the current user."""
+    current_user_required()
+    data = request.get_json(silent=True) or {}
+    nid = data.get("id")
+    if not nid:
+        return jsonify({"error": "missing_id"}), 400
+    rec = db.session.get(Notification, int(nid))
+    if not rec or rec.user_id != g.user.id:
+        return jsonify({"error": "not_found"}), 404
+    if rec.read_at is None:
+        rec.read_at = datetime.utcnow()
+        db.session.commit()
+    return jsonify({"ok": True, "row": ser(rec)})
+
+
+# (Kept for compatibility) ---------- Notifications generic ----------
 @app.get("/db/notifications")
-def list_notifications():
+def list_notifications_legacy():
     current_user_required()
     rows = Notification.query.filter_by(user_id=g.user.id).order_by(Notification.created_at.desc()).all()
     return jsonify([ser(r) for r in rows])
 
 @app.post("/db/notifications")
-def create_notification():
+def create_notification_legacy():
     current_user_required()
     data = request.get_json() or {}
     n = Notification(user_id=g.user.id, title=data.get("title",""), body=data.get("body",""))

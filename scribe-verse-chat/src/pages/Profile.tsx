@@ -21,6 +21,7 @@ type CreditsPayload = {
 };
 
 const API = import.meta.env.VITE_OFFLINE_API || "http://localhost:5001";
+const SALES_EMAIL = "napassornsp@hotmail.com"; // change if needed
 
 function authHeaders() {
   const token = localStorage.getItem("offline_token");
@@ -52,7 +53,7 @@ function Badge({ children }: { children: React.ReactNode }) {
 /** Remaining (dark) over Used (light) dual bar */
 function RemainingBar({ limit, remaining }: { limit: number | null; remaining: number | null }) {
   if (limit === null || remaining === null) {
-    // contract-based / unlimited – show full bar with em dash
+    // contract-based / unlimited – show full bar
     return (
       <div className="relative h-2 w-full rounded-full overflow-hidden">
         <div className="absolute inset-0 bg-muted" />
@@ -89,7 +90,7 @@ export default function Profile() {
   // plan/credits
   const [credits, setCredits] = useState<CreditsPayload | null>(null);
 
-  // Sales modal state (shared for Plus & Business)
+  // Sales modal state
   const [contactOpen, setContactOpen] = useState(false);
   const [contactLoading, setContactLoading] = useState(false);
   const [desiredPlan, setDesiredPlan] = useState<"plus" | "business">("plus");
@@ -182,6 +183,119 @@ export default function Profile() {
     return (first || "U").toUpperCase();
   }, [email]);
 
+  /* ------------ Contact Sales submit: notify + email + graceful fallback --- */
+  async function submitContactSales() {
+    if (!cName || !cEmail || !cMsg) {
+      toast({ title: "Please fill your name, email and message.", variant: "destructive" });
+      return;
+    }
+
+    setContactLoading(true);
+    const payload = {
+      plan: desiredPlan,
+      name: cName,
+      email: cEmail,
+      phone: cPhone || null,
+      company: cCompany || null,
+      location: cLocation || null,
+      message: cMsg,
+      submitted_at: new Date().toISOString(),
+    };
+
+    // Prepare email contents
+    const subject = `[Contact Sales] ${desiredPlan.toUpperCase()} – ${cName}`;
+    const textLines = [
+      `Plan: ${desiredPlan}`,
+      `Name: ${cName}`,
+      `Email: ${cEmail}`,
+      `Phone: ${cPhone || "-"}`,
+      `Company: ${cCompany || "-"}`,
+      `Location: ${cLocation || "-"}`,
+      ``,
+      `Message:`,
+      cMsg,
+    ];
+    const textBody = textLines.join("\n");
+    const htmlBody = `
+      <div>
+        <p><b>Plan:</b> ${desiredPlan}</p>
+        <p><b>Name:</b> ${cName}</p>
+        <p><b>Email:</b> ${cEmail}</p>
+        <p><b>Phone:</b> ${cPhone || "-"}</p>
+        <p><b>Company:</b> ${cCompany || "-"}</p>
+        <p><b>Location:</b> ${cLocation || "-"}</p>
+        <p><b>Message:</b></p>
+        <pre style="white-space:pre-wrap;font-family:inherit">${cMsg}</pre>
+      </div>`.trim();
+
+    let emailedOK = false;
+
+    // 1) Try to log the lead (optional server endpoint)
+    try {
+      await fetch(`${API}/rpc/contact_sales`, {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify(payload),
+      });
+    } catch {
+      /* ignore */
+    }
+
+    // 2) Try to email via backend (optional server endpoint)
+    try {
+      const r2 = await fetch(`${API}/rpc/send_email`, {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({
+          to: SALES_EMAIL,
+          subject,
+          text: textBody,
+          html: htmlBody,
+        }),
+      });
+      emailedOK = r2.ok;
+    } catch {
+      /* ignore */
+    }
+
+    // 3) Fallback to mailto if backend email not available
+    if (!emailedOK) {
+      const mailto = `mailto:${encodeURIComponent(SALES_EMAIL)}?subject=${encodeURIComponent(
+        subject
+      )}&body=${encodeURIComponent(textBody)}`;
+      try {
+        window.open(mailto, "_blank");
+        emailedOK = true; // consider success if draft opened
+      } catch {
+        /* ignore */
+      }
+    }
+
+    setContactLoading(false);
+
+    if (emailedOK) {
+      toast({
+        title: "Thanks! Your request has been sent.",
+        description: "We’ll get back to you shortly.",
+      });
+      // Reset + close
+      setContactOpen(false);
+      setDesiredPlan("plus");
+      setCName("");
+      setCEmail(email || "");
+      setCPhone("");
+      setCCompany("");
+      setCLocation("");
+      setCMsg("");
+    } else {
+      toast({
+        title: "Couldn’t send message",
+        description: "Please try again or email us directly.",
+        variant: "destructive",
+      });
+    }
+  }
+
   /* --------------------------------- Render -------------------------------- */
 
   if (loading) {
@@ -193,10 +307,6 @@ export default function Profile() {
     );
   }
 
-  function submitContactSales() {
-    throw new Error("Function not implemented.");
-  }
-
   return (
     <div className="px-6 py-4 h-[calc(100vh-60px)]">
       <div className="mb-4">
@@ -205,7 +315,7 @@ export default function Profile() {
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 h-[calc(100%-56px)]">
-        {/* LEFT: Account (email only) + password ------------------------------ */}
+        {/* LEFT: Account + password */}
         <section className="xl:col-span-1 space-y-6 overflow-y-auto pr-1">
           <div className="rounded-xl border bg-card p-4 shadow-sm">
             <SectionTitle>Account</SectionTitle>
@@ -259,7 +369,7 @@ export default function Profile() {
           </div>
         </section>
 
-        {/* RIGHT: Credits + Plans ---------------------------------------------- */}
+        {/* RIGHT: Credits + Pricing plans */}
         <section className="xl:col-span-2 space-y-6 overflow-y-auto pr-1">
           {/* Credits */}
           <div className="rounded-xl border bg-card p-4 shadow-sm">
@@ -312,97 +422,80 @@ export default function Profile() {
             )}
           </div>
 
-          {/* Current plan card */}
+          {/* Pricing plans */}
           <div className="rounded-xl border bg-card p-4 shadow-sm">
-            <SectionTitle>Current plan</SectionTitle>
+            <SectionTitle>Pricing plans</SectionTitle>
 
             <div className="space-y-3">
-              {currentPlan === "free" && (
-                <PlanRow
-                  active
-                  icon={<Shield className="h-4 w-4" />}
-                  title="Free"
-                  subtitle="Good for getting started."
-                  bullets={["Chat 100 per month", "OCR Bill 3 / OCR Bank 3 per month"]}
-                  rightBadge={<Badge>Current plan</Badge>}
-                />
-              )}
-              {currentPlan === "plus" && (
-                <PlanRow
-                  active
-                  icon={<Crown className="h-4 w-4" />}
-                  title="Plus"
-                  subtitle="More headroom for power users."
-                  bullets={["Chat 1000 per month", "OCR Bill 100 / OCR Bank 100 per month"]}
-                  rightBadge={<Badge>Current plan</Badge>}
-                />
-              )}
-              {currentPlan === "business" && (
-                <PlanRow
-                  active
-                  icon={<Building2 className="h-4 w-4" />}
-                  title="Business"
-                  subtitle="Contract-based limits."
-                  bullets={["Limits defined in your contract", "Priority assistance"]}
-                  rightBadge={<Badge>Current plan</Badge>}
-                />
-              )}
-              {isAdmin && (
-                <div className="rounded-md bg-muted/60 p-3 text-xs text-muted-foreground">
-                  Admin account: unlimited credits for all tasks.
-                </div>
-              )}
+              {/* Free */}
+              <PlanRow
+                active={currentPlan === "free"}
+                icon={<Shield className="h-4 w-4" />}
+                title="Free"
+                subtitle="Good for getting started."
+                bullets={["Chat 100 per month", "OCR Bill 3 / OCR Bank 3 per month"]}
+                rightBadge={currentPlan === "free" ? <Badge>Current plan</Badge> : null}
+              />
+
+              {/* Plus */}
+              <PlanRow
+                active={currentPlan === "plus"}
+                icon={<Crown className="h-4 w-4" />}
+                title="Plus"
+                subtitle="More headroom for power users."
+                bullets={["Chat 1000 per month", "OCR Bill 100 / OCR Bank 100 per month"]}
+                rightBadge={
+                  currentPlan === "plus" ? (
+                    <Badge>Current plan</Badge>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDesiredPlan("plus");
+                        setCEmail(email || "");
+                        setCMsg("");
+                        setContactOpen(true);
+                      }}
+                      className="rounded-md border px-3 py-1.5 text-xs hover:bg-muted"
+                    >
+                      Contact sales
+                    </button>
+                  )
+                }
+              />
+
+              {/* Business */}
+              <PlanRow
+                active={currentPlan === "business" || isAdmin}
+                icon={<Building2 className="h-4 w-4" />}
+                title="Business"
+                subtitle="Contract-based limits."
+                bullets={["Limits defined in your contract", "Priority assistance"]}
+                rightBadge={
+                  currentPlan === "business" || isAdmin ? (
+                    <Badge>Current plan</Badge>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDesiredPlan("business");
+                        setCEmail(email || "");
+                        setCMsg("");
+                        setContactOpen(true);
+                      }}
+                      className="rounded-md border px-3 py-1.5 text-xs hover:bg-muted"
+                    >
+                      Contact sales
+                    </button>
+                  )
+                }
+              />
             </div>
           </div>
-
-          {/* Actions */}
-          {!isAdmin && currentPlan !== "plus" && (
-            <ActionRow
-              icon={<Crown className="h-4 w-4" />}
-              title="Upgrade to Plus"
-              description="Talk to a person and complete purchase."
-              action={
-                <button
-                  type="button"
-                  onClick={() => {
-                    setDesiredPlan("plus");
-                    setCEmail(email || "");
-                    setCMsg("I’d like to purchase the Plus plan.");
-                    setContactOpen(true);
-                  }}
-                  className="rounded-md border px-3 py-1.5 text-sm hover:bg-muted"
-                >
-                  Contact sales
-                </button>
-              }
-            />
-          )}
-
-          {!isAdmin && currentPlan !== "business" && (
-            <ActionRow
-              icon={<Building2 className="h-4 w-4" />}
-              title="Contact Sales for Business"
-              description="Talk to a person to tailor limits and support."
-              action={
-                <button
-                  type="button"
-                  onClick={() => {
-                    setDesiredPlan("business");
-                    setCEmail(email || "");
-                    setCMsg("I’m interested in the Business plan and tailored limits.");
-                    setContactOpen(true);
-                  }}
-                  className="rounded-md border px-3 py-1.5 text-sm hover:bg-muted"
-                >
-                  Contact sales
-                </button>
-              }
-            />
-          )}
         </section>
       </div>
 
-      {/* Shared Contact/Purchase modal for Plus & Business */}
+      {/* Contact / Purchase modal */}
       {contactOpen && (
         <div
           className="fixed inset-0 z-50 grid place-items-center bg-black/40"
@@ -417,17 +510,28 @@ export default function Profile() {
             <div className="mb-2 flex items-center gap-2">
               <Building2 className="h-5 w-5" />
               <h3 className="text-lg font-semibold">
-                {desiredPlan === "plus" ? "Contact Sales – Plus" : "Contact Sales – Business"}
+                {`Contact Sales – ${desiredPlan === "plus" ? "Plus" : "Business"}`}
               </h3>
             </div>
 
-            <p className="text-sm text-muted-foreground">
-              Prefer phone? Call <b>081-XXXXXX</b>. Company: <b>YourCo Ltd.</b>, Location:{" "}
-              <b>Bangkok, Thailand</b>.
-            </p>
+            {/* Company contact info as bullets */}
+            <ul className="text-sm text-muted-foreground list-disc pl-5 space-y-1 mb-1">
+              <li>
+                <b>Phone:</b> 081-XXXXXX
+              </li>
+              <li>
+                <b>Company:</b> JV System Co., Ltd
+              </li>
+              <li>
+                <b>Location:</b> Bangkok, Thailand
+              </li>
+              <li>
+                <b>Email:</b> {SALES_EMAIL}
+              </li>
+            </ul>
 
             <form
-              className="mt-4 space-y-3"
+              className="mt-3 space-y-3"
               onSubmit={(e) => {
                 e.preventDefault();
                 submitContactSales();
@@ -554,31 +658,6 @@ function PlanRow({
           <li key={i}>{b}</li>
         ))}
       </ul>
-    </div>
-  );
-}
-
-function ActionRow({
-  icon,
-  title,
-  description,
-  action,
-}: {
-  icon: React.ReactNode;
-  title: string;
-  description: string;
-  action: React.ReactNode;
-}) {
-  return (
-    <div className="rounded-xl border bg-card p-4 shadow-sm flex items-center justify-between">
-      <div className="flex items-center gap-3">
-        {icon}
-        <div>
-          <div className="font-medium">{title}</div>
-          <div className="text-sm text-muted-foreground">{description}</div>
-        </div>
-      </div>
-      <div>{action}</div>
     </div>
   );
 }

@@ -36,7 +36,26 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Badge } from "@/components/ui/badge";
 import service from "@/services/backend";
 import type { Chat } from "@/services/types";
-import { useLocation } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
+
+/* --------------------------- offline API helpers --------------------------- */
+const API = import.meta.env.VITE_OFFLINE_API || "http://localhost:5001";
+
+function authHeaders() {
+  const token = localStorage.getItem("offline_token");
+  return token
+    ? { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }
+    : { "Content-Type": "application/json" };
+}
+
+async function selectTable<T = any>(table: string, params: Record<string, string> = {}) {
+  const u = new URL(`${API}/db/${table}`);
+  Object.entries(params).forEach(([k, v]) => u.searchParams.set(k, v));
+  const r = await fetch(u.toString(), { headers: authHeaders() });
+  if (!r.ok) throw new Error(`Failed to load ${table}`);
+  const j = await r.json();
+  return (j?.rows ?? []) as T[];
+}
 
 /* ---------------------------- OCR history typing ---------------------------- */
 type OcrItem = {
@@ -47,23 +66,6 @@ type OcrItem = {
   approved?: boolean;
   file_url?: string | null;
 };
-
-/* --------------------------- offline API helpers --------------------------- */
-const API = import.meta.env.VITE_OFFLINE_API || "http://localhost:5001";
-function authHeaders() {
-  const token = localStorage.getItem("offline_token");
-  return token
-    ? { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }
-    : { "Content-Type": "application/json" };
-}
-async function selectTable<T = any>(table: string, params: Record<string, string> = {}) {
-  const u = new URL(`${API}/db/${table}`);
-  Object.entries(params).forEach(([k, v]) => u.searchParams.set(k, v));
-  const r = await fetch(u.toString(), { headers: authHeaders() });
-  if (!r.ok) throw new Error(`Failed to load ${table}`);
-  const j = await r.json();
-  return (j?.rows ?? []) as T[];
-}
 
 interface AppSidebarProps {
   chats: Chat[];
@@ -84,14 +86,47 @@ export function AppSidebar({
   onDelete,
   loggedIn,
 }: AppSidebarProps) {
+  const navigate = useNavigate();
   const { state, toggleSidebar } = useSidebar();
   const collapsed = state === "collapsed";
   const location = useLocation();
 
-  // ---- route flags: WHICH module are we in? ----
+  // ---- precise route flags ----
+  const isChatRoute = location.pathname === "/" || location.pathname.startsWith("/chat");
   const isOcr = location.pathname.startsWith("/ocr");
   const isVision = location.pathname.startsWith("/vision");
-  const isChatbot = !isOcr && !isVision;
+
+  /* --------------------------- Notifications count --------------------------- */
+  const [unreadCount, setUnreadCount] = useState<number>(0);
+
+  const fetchUnreadCount = async () => {
+    try {
+      const r = await fetch(`${API}/notifications/count`, { headers: authHeaders() });
+      if (!r.ok) {
+        setUnreadCount(0);
+        return;
+      }
+      const j = await r.json();
+      setUnreadCount(Number(j?.unread || 0));
+    } catch {
+      setUnreadCount(0);
+    }
+  };
+
+  useEffect(() => {
+    // initial + polling refresh
+    fetchUnreadCount();
+    const t = setInterval(fetchUnreadCount, 30_000);
+
+    // refresh when notifications page updates something
+    const onUpdated = () => fetchUnreadCount();
+    window.addEventListener("notifications:updated" as any, onUpdated as any);
+
+    return () => {
+      clearInterval(t);
+      window.removeEventListener("notifications:updated" as any, onUpdated as any);
+    };
+  }, []);
 
   /* --------------------------- OCR history state --------------------------- */
   const [ocrItems, setOcrItems] = useState<OcrItem[]>([]);
@@ -151,7 +186,7 @@ export function AppSidebar({
     const last30: Chat[] = [];
     const older: Chat[] = [];
     for (const c of chats) {
-      const days = getAgeDays(c.created_at);
+      const days = getAgeDays((c as any).created_at);
       if (days <= 1) recent.push(c);
       else if (days <= 7) last7.push(c);
       else if (days <= 30) last30.push(c);
@@ -160,7 +195,7 @@ export function AppSidebar({
     return { recent, last7, last30, older };
   }, [chats]);
 
-  const chatKey = (c: Chat, index: number) => String(c.id ?? `${c.title ?? "untitled"}-${index}`);
+  const chatKey = (c: Chat, index: number) => String((c as any).id ?? `${c.title ?? "untitled"}-${index}`);
   const chatIdStr = (id: string | number | null | undefined) => String(id ?? "");
 
   return (
@@ -211,11 +246,11 @@ export function AppSidebar({
             <SidebarMenu>
               <SidebarMenuItem key="menu-chatbot">
                 <SidebarMenuButton
-                  isActive={isChatbot}
+                  isActive={isChatRoute}
                   tooltip={{ children: "Chatbot", hidden: false }}
                   className="overflow-hidden"
                   onClick={() => {
-                    if (location.pathname !== "/") window.location.href = "/";
+                    if (location.pathname !== "/") navigate("/");
                   }}
                 >
                   <MessageSquare className="h-4 w-4" />
@@ -229,7 +264,7 @@ export function AppSidebar({
                   tooltip={{ children: "OCR", hidden: false }}
                   className="overflow-hidden"
                   onClick={() => {
-                    if (!location.pathname.startsWith("/ocr")) window.location.href = "/ocr/bill";
+                    if (!location.pathname.startsWith("/ocr")) navigate("/ocr/bill");
                   }}
                 >
                   <FileText className="h-4 w-4" />
@@ -243,7 +278,7 @@ export function AppSidebar({
                   tooltip={{ children: "Vision AI", hidden: false }}
                   className="overflow-hidden"
                   onClick={() => {
-                    if (!location.pathname.startsWith("/vision")) window.location.href = "/vision/flower-classification";
+                    if (!location.pathname.startsWith("/vision")) navigate("/vision/flower-classification");
                   }}
                 >
                   <Eye className="h-4 w-4" />
@@ -254,38 +289,40 @@ export function AppSidebar({
           </SidebarGroupContent>
         </SidebarGroup>
 
-        {/* ---------- New ---------- */}
-        <SidebarGroup>
-          <SidebarGroupContent>
-            <SidebarMenu>
-              <SidebarMenuItem key="menu-new">
-                <SidebarMenuButton
-                  onClick={() => {
-                    if (isOcr) {
-                      window.dispatchEvent(new CustomEvent("ocr:new"));
-                    } else if (isVision) {
-                      window.dispatchEvent(new CustomEvent("vision:new"));
-                    } else {
-                      onNewChat();
-                    }
-                  }}
-                  tooltip={{
-                    children: isOcr ? "New OCR" : isVision ? "New Image" : "New Chat",
-                    hidden: false,
-                  }}
-                  className="overflow-hidden bg-gradient-to-r from-primary to-accent text-primary-foreground hover:brightness-110"
-                >
-                  <Plus className="h-4 w-4" />
-                  {!collapsed && (
-                    <span className="font-medium">
-                      {isOcr ? "New OCR" : isVision ? "New Image" : "New Chat"}
-                    </span>
-                  )}
-                </SidebarMenuButton>
-              </SidebarMenuItem>
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
+        {/* ---------- New (only on actual chat route OR OCR/Vision) ---------- */}
+        {(isChatRoute || isOcr || isVision) && (
+          <SidebarGroup>
+            <SidebarGroupContent>
+              <SidebarMenu>
+                <SidebarMenuItem key="menu-new">
+                  <SidebarMenuButton
+                    onClick={() => {
+                      if (isOcr) {
+                        window.dispatchEvent(new CustomEvent("ocr:new"));
+                      } else if (isVision) {
+                        window.dispatchEvent(new CustomEvent("vision:new"));
+                      } else if (isChatRoute) {
+                        onNewChat();
+                      }
+                    }}
+                    tooltip={{
+                      children: isOcr ? "New OCR" : isVision ? "New Image" : "New Chat",
+                      hidden: false,
+                    }}
+                    className="overflow-hidden bg-gradient-to-r from-primary to-accent text-primary-foreground hover:brightness-110"
+                  >
+                    <Plus className="h-4 w-4" />
+                    {!collapsed && (
+                      <span className="font-medium">
+                        {isOcr ? "New OCR" : isVision ? "New Image" : "New Chat"}
+                      </span>
+                    )}
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+        )}
 
         <SidebarSeparator />
 
@@ -334,8 +371,8 @@ export function AppSidebar({
           </SidebarGroup>
         )}
 
-        {/* ---------- Chat History (only on Chatbot pages) ---------- */}
-        {!collapsed && isChatbot && (
+        {/* ---------- Chat History (only on REAL chat route) ---------- */}
+        {!collapsed && isChatRoute && (
           <SidebarGroup className="min-h-0 flex-1 overflow-hidden">
             <SidebarGroupLabel>History</SidebarGroupLabel>
             <SidebarGroupContent>
@@ -352,8 +389,8 @@ export function AppSidebar({
                         {list.map((chat, idx) => (
                           <SidebarMenuItem key={chatKey(chat, idx)}>
                             <SidebarMenuButton
-                              isActive={activeId === chatIdStr(chat.id)}
-                              onClick={() => onSelect(chatIdStr(chat.id))}
+                              isActive={activeId === chatIdStr((chat as any).id)}
+                              onClick={() => onSelect(chatIdStr((chat as any).id))}
                               tooltip={{ children: chat.title, hidden: false }}
                               className="overflow-hidden"
                             >
@@ -368,12 +405,12 @@ export function AppSidebar({
                                 <DropdownMenuItem
                                   onClick={() => {
                                     const name = window.prompt("Rename chat", chat.title);
-                                    if (name) onRename(chatIdStr(chat.id), name);
+                                    if (name) onRename(chatIdStr((chat as any).id), name);
                                   }}
                                 >
                                   Rename
                                 </DropdownMenuItem>
-                                <DropdownMenuItem onClick={() => onDelete(chatIdStr(chat.id))}>
+                                <DropdownMenuItem onClick={() => onDelete(chatIdStr((chat as any).id))}>
                                   Delete
                                 </DropdownMenuItem>
                               </DropdownMenuContent>
@@ -403,27 +440,35 @@ export function AppSidebar({
                       >
                         <div className="relative">
                           <User className="h-4 w-4" />
-                          <span className="absolute -top-0.5 -right-0.5 h-2 w-2 rounded-full bg-destructive" aria-hidden />
+                          {unreadCount > 0 && (
+                            <span
+                              className="absolute -top-0.5 -right-0.5 h-2 w-2 rounded-full bg-destructive"
+                              aria-hidden
+                            />
+                          )}
                         </div>
+
                         {!collapsed && <span>Profile</span>}
                       </SidebarMenuButton>
                     </PopoverTrigger>
 
                     <PopoverContent align="end" className="p-1 w-56">
                       <div className="flex flex-col">
-                        <button className="flex items-center gap-2 px-2 py-2 rounded hover:bg-muted" onClick={() => (window.location.href = "/")}>
+                        <button className="flex items-center gap-2 px-2 py-2 rounded hover:bg-muted" onClick={() => navigate("/home")}>
                           <Home className="h-4 w-4" /> Home
                         </button>
-                        <button className="flex items-center gap-2 px-2 py-2 rounded hover:bg-muted" onClick={() => (window.location.href = "/profile")}>
+                        <button className="flex items-center gap-2 px-2 py-2 rounded hover:bg-muted" onClick={() => navigate("/profile")}>
                           <User className="h-4 w-4" /> User Profile
                         </button>
-                        <button className="flex items-center gap-2 px-2 py-2 rounded hover:bg-muted" onClick={() => (window.location.href = "/notifications")}>
+                        <button className="flex items-center gap-2 px-2 py-2 rounded hover:bg-muted" onClick={() => navigate("/notifications")}>
                           <Bell className="h-4 w-4" /> Notifications
-                          <span className="ml-auto inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-primary text-primary-foreground text-xs px-1">
-                            3
-                          </span>
+                          {unreadCount > 0 && (
+                            <span className="ml-auto inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-primary text-primary-foreground text-xs px-1">
+                              {unreadCount}
+                            </span>
+                          )}
                         </button>
-                        <button className="flex items-center gap-2 px-2 py-2 rounded hover:bg-muted" onClick={() => (window.location.href = "/help")}>
+                        <button className="flex items-center gap-2 px-2 py-2 rounded hover:bg-muted" onClick={() => navigate("/help")}>
                           <HelpCircle className="h-4 w-4" /> Help
                         </button>
                         <div className="my-1 border-t" />
@@ -436,13 +481,13 @@ export function AppSidebar({
                               } catch {
                                 /* ignore */
                               }
-                              window.location.href = "/auth";
+                              navigate("/auth");
                             }}
                           >
                             <LogOut className="h-4 w-4" /> Logout
                           </button>
                         ) : (
-                          <button className="flex items-center gap-2 px-2 py-2 rounded hover:bg-muted" onClick={() => (window.location.href = "/auth")}>
+                          <button className="flex items-center gap-2 px-2 py-2 rounded hover:bg-muted" onClick={() => navigate("/auth")}>
                             <LogIn className="h-4 w-4" /> Login
                           </button>
                         )}
