@@ -7,24 +7,29 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import VisionModeSelect from "@/pages/vision/VisionModeSelect";
 
-type FoodClass = { label: string; confidence: number };
-type FoodResponse = {
+type PersonClass = { label: string; confidence: number };
+type PersonResponse = {
   image?: { width: number; height: number };
-  classes: FoodClass[];
+  classes: PersonClass[];
 };
 
 const API = import.meta.env.VITE_OFFLINE_API || "http://localhost:5001";
-const ENDPOINT = "/vision/food/classify";
+const ENDPOINT = "/vision/person/classify";
+
+// Set this true to always return mock data (no server needed).
+const USE_DUMMY = true;
 
 const authHeader = () => {
   const tok = localStorage.getItem("offline_token") || "";
   return tok ? { Authorization: `Bearer ${tok}` } : {};
 };
 
-export default function Food() {
+export default function PersonClassification() {
   const canonical =
-    typeof window !== "undefined" ? window.location.origin + "/vision/food" : "";
-  const title = useMemo(() => "Food Classification", []);
+    typeof window !== "undefined"
+      ? window.location.origin + "/vision/person-classification"
+      : "";
+  const title = useMemo(() => "Person Classification", []);
 
   // file + image
   const [file, setFile] = useState<File | null>(null);
@@ -36,7 +41,7 @@ export default function Food() {
 
   // results
   const [processing, setProcessing] = useState(false);
-  const [resp, setResp] = useState<FoodResponse | null>(null);
+  const [resp, setResp] = useState<PersonResponse | null>(null);
   const [elapsedMs, setElapsedMs] = useState<number | null>(null);
 
   // refs
@@ -165,10 +170,8 @@ export default function Food() {
       const factor = newDist > pinchRef.current.lastDist ? 1.03 : 0.97;
       pinchRef.current.lastDist = newDist;
       const rect = (e.currentTarget as HTMLCanvasElement).getBoundingClientRect();
-      const cx =
-        (e.touches[0].clientX + e.touches[1].clientX) / 2 - rect.left;
-      const cy =
-        (e.touches[0].clientY + e.touches[1].clientY) / 2 - rect.top;
+      const cx = (e.touches[0].clientX + e.touches[1].clientX) / 2 - rect.left;
+      const cy = (e.touches[0].clientY + e.touches[1].clientY) / 2 - rect.top;
       zoomAt(cx, cy, factor);
     }
   };
@@ -214,41 +217,44 @@ export default function Food() {
     );
   };
 
-  /* ---------------- backend call ---------------- */
+  /* ---------------- backend call (or dummy) ---------------- */
+  const mockResponse = (): PersonResponse => ({
+    image: { width: imgWH?.w || 640, height: imgWH?.h || 480 },
+    classes: [
+      { label: "Person", confidence: 0.99 },
+      { label: "Adult", confidence: 0.93 },
+      { label: "Standing", confidence: 0.88 },
+    ],
+  });
+
   const analyze = async () => {
     if (!file) return;
     setProcessing(true);
     setResp(null);
     setElapsedMs(null);
     const t0 = performance.now();
+
     try {
-      const fd = new FormData();
-      fd.append("file", file);
-      const r = await fetch(`${API}${ENDPOINT}`, {
-        method: "POST",
-        headers: { ...authHeader() },
-        body: fd,
-      });
-      const data: FoodResponse = await r.json();
+      if (USE_DUMMY) {
+        // Simulate latency
+        await new Promise((r) => setTimeout(r, 400));
+        setResp(mockResponse());
+      } else {
+        const fd = new FormData();
+        fd.append("file", file);
+        const r = await fetch(`${API}${ENDPOINT}`, {
+          method: "POST",
+          headers: { ...authHeader() },
+          body: fd,
+        });
+        const data: PersonResponse = await r.json();
 
-      const safe =
-        data && Array.isArray(data.classes) && data.classes.length
-          ? data
-          : {
-              image: { width: imgWH?.w || 640, height: imgWH?.h || 480 },
-              classes: [
-                { label: "Italian Cuisine", confidence: 0.95 },
-                { label: "Pasta", confidence: 0.88 },
-                { label: "Tomato Sauce", confidence: 0.82 },
-              ],
-            };
-
-      setResp(safe);
+        const safe =
+          data && Array.isArray(data.classes) && data.classes.length ? data : mockResponse();
+        setResp(safe);
+      }
     } catch {
-      setResp({
-        image: { width: imgWH?.w || 640, height: imgWH?.h || 480 },
-        classes: [{ label: "Italian Cuisine", confidence: 0.95 }],
-      });
+      setResp(mockResponse());
     } finally {
       setElapsedMs(Math.round(performance.now() - t0));
       setProcessing(false);
@@ -266,7 +272,7 @@ export default function Food() {
         <h1 className="text-2xl font-bold">{title}</h1>
         <VisionModeSelect />
         <div className="ml-auto">
-          <Badge variant="secondary">Mode: Food</Badge>
+          <Badge variant="secondary">Mode: Person</Badge>
         </div>
       </header>
 
@@ -318,12 +324,8 @@ export default function Food() {
           <CardContent>
             <Tabs defaultValue="results">
               <TabsList className="grid grid-cols-2 w-full h-9">
-                <TabsTrigger value="results" className="text-sm">
-                  Results
-                </TabsTrigger>
-                <TabsTrigger value="raw" className="text-sm">
-                  Raw Data
-                </TabsTrigger>
+                <TabsTrigger value="results" className="text-sm">Results</TabsTrigger>
+                <TabsTrigger value="raw" className="text-sm">Raw Data</TabsTrigger>
               </TabsList>
 
               <TabsContent value="results" className="space-y-3 mt-4">

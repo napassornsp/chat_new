@@ -8,7 +8,6 @@ const MODES: Mode[] = [
   { value: "food",    label: "Food Classification",   path: "/vision/food" },
   { value: "pet-cls", label: "Pet Classification",    path: "/vision/pet-classification" },
   { value: "veh-cls", label: "Vehicle Classification",path: "/vision/vehicle-classification" },
-  { value: "doc-cls", label: "Document Classification",path:"/vision/document-classification" },
   { value: "pet-det", label: "Pet Detection",         path: "/vision/pet-detection" },
   { value: "veh-det", label: "Vehicle Detection",     path: "/vision/vehicle-detection" },
   { value: "person",  label: "Person Detection",      path: "/vision/person-detection" },

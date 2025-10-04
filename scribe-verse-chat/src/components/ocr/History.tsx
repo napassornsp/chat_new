@@ -1,154 +1,203 @@
-import React, { useEffect, useMemo, useState, useCallback } from "react";
-import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+// src/components/ocr/OCRHistory.tsx
+import { useEffect, useMemo, useState } from "react";
+import { FileText, MoreHorizontal } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+} from "@/components/ui/dropdown-menu";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { Separator } from "@/components/ui/separator";
-import { RefreshCw, FileText, Pencil, Trash2, CheckCircle2, Search } from "lucide-react";
-import service from "@/services/backend";
 
-type OcrType = "bill" | "bank";
+type OCRItem = { id: string; name: string; tag?: string };
+type Props = { initial?: OCRItem[]; storageKey?: string };
 
-type Item = {
-  id: string;
-  type: OcrType;
-  filename: string | null;
-  file_url: string | null;
-  data: any;
-  approved?: boolean;
-  created_at: string;
-};
+// Turn on once to visually confirm the dots hit area.
+const DEBUG = false;
 
-type Props = {
-  type: OcrType;
-  onOpen?: (item: Item) => void; // optional: we also broadcast a global event
-};
-
-export default function OCRHistory({ type, onOpen }: Props) {
-  const [items, setItems] = useState<Item[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [q, setQ] = useState("");
-
-  const load = useCallback(async () => {
-    setLoading(true);
+export default function OCRHistory({ initial, storageKey = "ocr_history" }: Props) {
+  const load = (): OCRItem[] => {
     try {
-      const rows = await service.listOcr(type, 50, 0);
-      setItems(rows as Item[]);
-    } catch (e) {
-      console.error(e);
-      setItems([]);
-    } finally {
-      setLoading(false);
+      const raw = localStorage.getItem(storageKey);
+      if (raw) return JSON.parse(raw);
+    } catch {
+      /* ignore */
     }
-  }, [type]);
+    return initial ?? [];
+  };
 
-  useEffect(() => { load(); }, [load]);
+  const [items, setItems] = useState<OCRItem[]>(load);
 
-  // Allow other components to request refresh
   useEffect(() => {
-    const listener = () => load();
-    window.addEventListener("ocr:refresh", listener as any);
-    return () => window.removeEventListener("ocr:refresh", listener as any);
-  }, [load]);
-
-  const filtered = useMemo(() => {
-    if (!q.trim()) return items;
-    const needle = q.trim().toLowerCase();
-    return items.filter((it) => {
-      const name = (it.filename || "").toLowerCase();
-      const id = String(it.id);
-      return name.includes(needle) || id.includes(needle);
-    });
-  }, [items, q]);
-
-  const openItem = (it: Item) => {
-    onOpen?.(it);
-    window.dispatchEvent(new CustomEvent("ocr:open", { detail: { type, id: it.id } }));
-  };
-
-  const doRename = async (it: Item) => {
-    const current = it.filename || "";
-    const name = window.prompt("Rename file", current);
-    if (name == null) return;
-    const val = name.trim();
-    if (!val || val === current) return;
     try {
-      await service.updateOcr(type, it.id, { filename: val });
-      await load();
-    } catch (e) {
-      console.error(e);
-      alert("Rename failed");
+      localStorage.setItem(storageKey, JSON.stringify(items));
+    } catch {
+      /* ignore */
     }
+  }, [items, storageKey]);
+
+  const rename = async (id: string, newName: string) => {
+    setItems((xs) => xs.map((x) => (x.id === id ? { ...x, name: newName } : x)));
+    alert("Renamed."); // swap for your toast if desired
   };
 
-  const doDelete = async (it: Item) => {
-    if (!window.confirm(`Delete "${it.filename || it.id}"?`)) return;
-    try {
-      await service.deleteOcr(type, it.id);
-      await load();
-    } catch (e) {
-      console.error(e);
-      alert("Delete failed");
-    }
+  const remove = async (id: string) => {
+    setItems((xs) => xs.filter((x) => x.id !== id));
+    alert("Deleted."); // swap for your toast if desired
   };
+
+  if (!items.length) {
+    return <div className="text-sm text-muted-foreground">No OCR history yet.</div>;
+  }
+
+  // allow popovers to render outside (no clipping)
+  return (
+    <div className="space-y-2 overflow-visible">
+      {items.map((item) => (
+        <Row key={item.id} item={item} onRename={rename} onDelete={remove} />
+      ))}
+    </div>
+  );
+}
+
+/* ---------------- Row (name | tag | ... absolute at far right) ---------------- */
+function Row({
+  item,
+  onRename,
+  onDelete,
+}: {
+  item: OCRItem;
+  onRename: (id: string, newName: string) => Promise<void> | void;
+  onDelete: (id: string) => Promise<void> | void;
+}) {
+  const [openRename, setOpenRename] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [newName, setNewName] = useState(item.name);
+
+  const TagPill = useMemo(
+    () =>
+      item.tag ? (
+        <Badge variant="secondary" className="shrink-0">
+          {item.tag}
+        </Badge>
+      ) : null,
+    [item.tag]
+  );
 
   return (
-    <Card>
-      <CardHeader className="flex flex-row items-center justify-between space-y-0">
-        <CardTitle className="text-base font-semibold">OCR History</CardTitle>
-        <div className="flex items-center gap-2">
-          <div className="relative">
-            <Search className="h-4 w-4 absolute left-2 top-2.5 opacity-60" />
-            <Input
-              className="pl-8 h-9 w-48"
-              placeholder="Search name / id"
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-            />
-          </div>
-          <Button variant="ghost" size="icon" onClick={load} disabled={loading} title="Refresh">
-            <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
-          </Button>
+    // Reserve space for the dots (pr-12), ensure positioning & no clipping
+    <div className="relative flex items-center gap-2 py-1 pr-12 overflow-visible">
+      <FileText className="h-4 w-4 text-muted-foreground shrink-0" />
+
+      {/* Name (truncates) */}
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-sm" title={item.name}>
+          {item.name}
         </div>
-      </CardHeader>
-      <Separator />
-      <CardContent className="p-0">
-        {filtered.length === 0 ? (
-          <div className="p-4 text-sm text-muted-foreground">
-            {loading ? "Loading..." : "No history found."}
-          </div>
-        ) : (
-          <div className="max-h-[420px] overflow-y-auto">
-            {filtered.map((it) => (
-              <div
-                key={`${it.type}-${it.id}`}
-                className="flex items-center gap-2 px-3 py-2 border-b last:border-none hover:bg-muted/40"
-              >
-                <FileText className="h-4 w-4 shrink-0" />
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-sm font-medium">
-                    {it.filename || (it.type === "bill" ? "Bill" : "Bank")}
-                  </div>
-                  <div className="text-[11px] text-muted-foreground truncate">
-                    {new Date(it.created_at).toLocaleString()}
-                  </div>
-                </div>
-                {it.approved ? (
-                  <CheckCircle2 className="h-4 w-4 text-green-600 dark:text-green-400" aria-label="Approved" />
-                ) : null}
-                <Badge variant="outline" className="capitalize">{it.type}</Badge>
-                <Button size="sm" variant="secondary" onClick={() => openItem(it)}>Open</Button>
-                <Button size="icon" variant="ghost" onClick={() => doRename(it)} title="Rename">
-                  <Pencil className="h-4 w-4" />
-                </Button>
-                <Button size="icon" variant="ghost" onClick={() => doDelete(it)} title="Delete">
-                  <Trash2 className="h-4 w-4" />
-                </Button>
-              </div>
-            ))}
-          </div>
-        )}
-      </CardContent>
-    </Card>
+      </div>
+
+      {/* Tag sits near the right, before the dots */}
+      {TagPill}
+
+      {/* Absolute dots at extreme right; always visible & clickable */}
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <button
+            aria-label="More actions"
+            className={[
+              "absolute right-2 top-1/2 -translate-y-1/2",
+              "h-7 w-7 grid place-items-center rounded-md",
+              "hover:bg-muted",
+              "shrink-0 z-50 pointer-events-auto",
+              DEBUG ? "ring-2 ring-blue-400" : "",
+            ].join(" ")}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <MoreHorizontal className="h-4 w-4 text-muted-foreground" />
+          </button>
+        </DropdownMenuTrigger>
+
+        <DropdownMenuContent
+          align="end"
+          sideOffset={8}
+          className="w-44 rounded-xl border bg-white/95 backdrop-blur shadow-lg p-1 z-[60]"
+        >
+          <DropdownMenuItem
+            className="rounded-lg text-[15px] py-2"
+            onClick={() => setOpenRename(true)}
+          >
+            Rename
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            className="rounded-lg text-[15px] py-2 text-red-600 focus:text-red-600"
+            onClick={async () => {
+              try {
+                setBusy(true);
+                await onDelete(item.id);
+              } finally {
+                setBusy(false);
+              }
+            }}
+          >
+            Delete
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+
+      {/* Rename dialog */}
+      <Dialog open={openRename} onOpenChange={setOpenRename}>
+        <DialogContent onClick={(e) => e.stopPropagation()}>
+          <DialogHeader>
+            <DialogTitle>Rename</DialogTitle>
+          </DialogHeader>
+          <Input
+            autoFocus
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && newName.trim()) {
+                void (async () => {
+                  try {
+                    setBusy(true);
+                    await onRename(item.id, newName.trim());
+                    setOpenRename(false);
+                  } finally {
+                    setBusy(false);
+                  }
+                })();
+              }
+            }}
+          />
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setOpenRename(false)}>
+              Cancel
+            </Button>
+            <Button
+              disabled={!newName.trim() || busy}
+              onClick={async () => {
+                try {
+                  setBusy(true);
+                  await onRename(item.id, newName.trim());
+                  setOpenRename(false);
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              Save
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
   );
 }

@@ -5,6 +5,12 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { HelmetProvider } from "react-helmet-async";
+import VisionPetClassification from "./pages/vision/pet-classification";
+import VisionPersonClassification from "./pages/vision/person-classification";
+import VisionVehicleClassification from "./pages/vision/vehicle-classification";
+import VisionPetDetection from "./pages/vision/pet-detection";
+import VisionPersonDetection from "./pages/vision/person-detection";
+import VisionVehicleDetection from "./pages/vision/vehicle-detection";
 
 // Core pages
 import Index from "./pages/Index";
@@ -58,7 +64,12 @@ const App = () => (
               {/* Vision demo (remove if not needed) */}
               <Route path="/vision/flower" element={<VisionFlower />} />
               <Route path="/vision/food" element={<VisionFood />} />
-              <Route path="/vision/pet" element={<VisionFood />} />
+              <Route path="/vision/pet-classification" element={<VisionPetClassification />} />
+              <Route path="/vision/person-classification" element={<VisionPersonClassification />} />
+              <Route path="/vision/vehicle-classification" element={<VisionVehicleClassification />} />
+              <Route path="/vision/pet-detection" element={<VisionPetDetection />} />
+              <Route path="/vision/person-detection" element={<VisionPersonDetection />} />
+              <Route path="/vision/vehicle-detection" element={<VisionVehicleDetection />} />
             </Route>
 
             {/* redirects */}
